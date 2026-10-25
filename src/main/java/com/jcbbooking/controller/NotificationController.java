@@ -142,31 +142,48 @@ public class NotificationController {
 
         final Long effectiveUserId = userId;
         final String effectiveToken = tokenVal.trim();
-        final String effectivePlatform = platVal != null ? platVal : "ANDROID";
-        final String effectiveDeviceId = didVal;
+        final String effectivePlatform = platVal != null && !platVal.trim().isEmpty() ? platVal.trim().toUpperCase() : "ANDROID";
+        final String effectiveDeviceId = (didVal != null && !didVal.trim().isEmpty()) ? didVal.trim() : null;
 
-        // Multi-device handling: deactivate other active device tokens for this user
-        List<DeviceToken> existingTokens = deviceTokenRepository.findAllByUserIdAndActiveTrue(effectiveUserId);
-        for (DeviceToken dt : existingTokens) {
-            if (!effectiveToken.equals(dt.getDeviceToken())) {
-                dt.setActive(false);
-                deviceTokenRepository.save(dt);
+        // If user already has an entry in user_devices, update device_id and device_token instead of inserting a second entry
+        List<DeviceToken> existingList = deviceTokenRepository.findAllByUserId(effectiveUserId);
+
+        DeviceToken token;
+        if (existingList != null && !existingList.isEmpty()) {
+            token = existingList.get(0);
+
+            // If a dummy token (like driver-token-X) is sent but existing token is a real fcm_ token, preserve the valid fcm token
+            boolean isDummyToken = effectiveToken.startsWith("driver-token-") || "undefined".equalsIgnoreCase(effectiveToken) || "null".equalsIgnoreCase(effectiveToken);
+            if (!isDummyToken || token.getDeviceToken() == null || token.getDeviceToken().trim().isEmpty() || token.getDeviceToken().startsWith("driver-token-")) {
+                token.setDeviceToken(effectiveToken);
             }
+            if (effectiveDeviceId != null) {
+                token.setDeviceId(effectiveDeviceId);
+            }
+            token.setPlatform(effectivePlatform);
+            token.setActive(true);
+            token.setLastSeenAt(LocalDateTime.now());
+
+            // Delete any duplicate entries for this user if they exist
+            if (existingList.size() > 1) {
+                for (int i = 1; i < existingList.size(); i++) {
+                    deviceTokenRepository.delete(existingList.get(i));
+                }
+            }
+        } else {
+            token = DeviceToken.builder()
+                    .userId(effectiveUserId)
+                    .deviceToken(effectiveToken)
+                    .platform(effectivePlatform)
+                    .deviceId(effectiveDeviceId)
+                    .active(true)
+                    .lastSeenAt(LocalDateTime.now())
+                    .build();
         }
 
-        DeviceToken token = deviceTokenRepository.findByUserIdAndDeviceToken(effectiveUserId, effectiveToken)
-                .orElseGet(() -> DeviceToken.builder()
-                        .userId(effectiveUserId)
-                        .deviceToken(effectiveToken)
-                        .platform(effectivePlatform)
-                        .deviceId(effectiveDeviceId)
-                        .build());
-
-        token.setActive(true);
-        token.setPlatform(effectivePlatform);
-        if (effectiveDeviceId != null) token.setDeviceId(effectiveDeviceId);
-        token.setLastSeenAt(LocalDateTime.now());
         DeviceToken saved = deviceTokenRepository.save(token);
+        log.info("Registered/updated deviceToken for userId: {}, deviceId: {}, platform: {}, token: {}",
+                effectiveUserId, saved.getDeviceId(), saved.getPlatform(), saved.getDeviceToken());
 
         return ResponseEntity.ok(ApiResponse.success("Device token registered successfully", saved));
     }

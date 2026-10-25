@@ -66,6 +66,8 @@ public class DatabaseInitializer implements CommandLineRunner {
             log.warn("Auto-alter vehicles columns to LONGTEXT note: {}", e.getMessage());
         }
 
+
+
         try {
             entityManager.createNativeQuery("ALTER TABLE bookings MODIFY COLUMN estimated_fare DECIMAL(12,2) DEFAULT 0.00").executeUpdate();
             entityManager.createNativeQuery("ALTER TABLE bookings MODIFY COLUMN final_fare DECIMAL(12,2) DEFAULT 0.00").executeUpdate();

@@ -64,6 +64,8 @@ public class SecurityConfig {
                                 "/api/v1/vehicles/**",
                                 "/api/v1/vehicle-masters/**",
                                 "/api/v1/admin/vehicle-masters/**",
+                                "/api/v1/products",
+                                "/api/v1/products/**",
                                 "/api/v1/notifications/notify-admin",
                                 "/api/v1/bookings",
                                 "/api/v1/bookings/**",

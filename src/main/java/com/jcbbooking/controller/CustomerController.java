@@ -40,7 +40,10 @@ public class CustomerController {
             return ResponseEntity.status(401).body(ApiResponse.error("Unauthorized"));
         }
 
-        User user = userRepository.findById(userDetails.getId()).orElse(userDetails.getUser());
+        User user = userRepository.findById(userDetails.getId()).orElse(null);
+        if (user == null || !Boolean.TRUE.equals(user.getActive())) {
+            return ResponseEntity.status(401).body(ApiResponse.error("User account not found or deleted"));
+        }
         return ResponseEntity.ok(ApiResponse.success("Customer profile retrieved", user));
     }
 

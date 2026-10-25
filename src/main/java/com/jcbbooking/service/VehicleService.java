@@ -26,6 +26,7 @@ public class VehicleService {
     private final UserNotificationRepository userNotificationRepository;
     private final WebSocketNotificationService webSocketNotificationService;
     private final com.jcbbooking.repository.DriverRepository driverRepository;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
     public List<Vehicle> getAllVehicles() {
         return vehicleRepository.findAllByOrderByCreatedAtDesc();
@@ -33,6 +34,23 @@ public class VehicleService {
 
     public List<Vehicle> getVehiclesByUserId(Long userId) {
         List<Vehicle> list = vehicleRepository.findByUserIdOrderByCreatedAtDesc(userId);
+        if (list != null && list.size() > 1) {
+            boolean hasConfigured = list.stream().anyMatch(v -> v.getRegNumber() != null && !v.getRegNumber().trim().isEmpty());
+            if (hasConfigured) {
+                List<Vehicle> placeholders = list.stream()
+                        .filter(v -> (v.getRegNumber() == null || v.getRegNumber().trim().isEmpty()) && (v.getChassisVin() == null || v.getChassisVin().trim().isEmpty()))
+                        .toList();
+                for (Vehicle p : placeholders) {
+                    try {
+                        vehicleRepository.delete(p);
+                        log.info("Cleaned up orphaned blank placeholder vehicle ID: {}", p.getId());
+                    } catch (Exception e) {
+                        log.warn("Could not delete placeholder vehicle: {}", e.getMessage());
+                    }
+                }
+                list = vehicleRepository.findByUserIdOrderByCreatedAtDesc(userId);
+            }
+        }
         if (list == null || list.isEmpty()) {
             Driver d = driverRepository.findByUserId(userId).orElse(null);
             if (d != null) {
@@ -40,16 +58,49 @@ public class VehicleService {
                 if (v != null) return List.of(v);
             }
         }
+        if (list != null) {
+            for (Vehicle v : list) {
+                if (v.getVehicleTypeId() == null || v.getVehicleModelId() == null) {
+                    autoResolveVehicleMasterIds(v);
+                    try { vehicleRepository.save(v); } catch (Exception ignored) {}
+                }
+            }
+        }
         return list;
     }
 
     public List<Vehicle> getVehiclesByDriverId(Long driverId) {
         List<Vehicle> list = vehicleRepository.findByDriverIdOrderByCreatedAtDesc(driverId);
+        if (list != null && list.size() > 1) {
+            boolean hasConfigured = list.stream().anyMatch(v -> v.getRegNumber() != null && !v.getRegNumber().trim().isEmpty());
+            if (hasConfigured) {
+                List<Vehicle> placeholders = list.stream()
+                        .filter(v -> (v.getRegNumber() == null || v.getRegNumber().trim().isEmpty()) && (v.getChassisVin() == null || v.getChassisVin().trim().isEmpty()))
+                        .toList();
+                for (Vehicle p : placeholders) {
+                    try {
+                        vehicleRepository.delete(p);
+                        log.info("Cleaned up orphaned blank placeholder vehicle ID: {}", p.getId());
+                    } catch (Exception e) {
+                        log.warn("Could not delete placeholder vehicle: {}", e.getMessage());
+                    }
+                }
+                list = vehicleRepository.findByDriverIdOrderByCreatedAtDesc(driverId);
+            }
+        }
         if (list == null || list.isEmpty()) {
             Driver d = driverRepository.findById(driverId).orElse(null);
             if (d != null) {
                 Vehicle v = createDefaultVehicleIfNoneExists(d.getUserId(), driverId, d.getSelectedVehicleType(), d.getSelectedMachineryModel());
                 if (v != null) return List.of(v);
+            }
+        }
+        if (list != null) {
+            for (Vehicle v : list) {
+                if (v.getVehicleTypeId() == null || v.getVehicleModelId() == null) {
+                    autoResolveVehicleMasterIds(v);
+                    try { vehicleRepository.save(v); } catch (Exception ignored) {}
+                }
             }
         }
         return list;
@@ -79,6 +130,22 @@ public class VehicleService {
             }
         }
 
+        // If driver already has a blank/placeholder vehicle (created during registration with empty regNumber),
+        // update that existing vehicle instead of creating an orphaned duplicate!
+        if (vehicle.getDriverId() != null || vehicle.getUserId() != null) {
+            List<Vehicle> existingList = vehicleRepository.findByUserIdOrDriverId(vehicle.getUserId(), vehicle.getDriverId());
+            Vehicle placeholder = existingList.stream()
+                    .filter(v -> v.getRegNumber() == null || v.getRegNumber().trim().isEmpty())
+                    .findFirst()
+                    .orElse(null);
+            if (placeholder != null) {
+                log.info("Found placeholder vehicle ID: {} for Driver: {} / User: {}. Updating details instead of creating duplicate.",
+                        placeholder.getId(), vehicle.getDriverId(), vehicle.getUserId());
+                return updateVehicle(placeholder.getId(), vehicle);
+            }
+        }
+
+        autoResolveVehicleMasterIds(vehicle);
         log.info("Creating new vehicle: {} (Reg: {}) for UserId: {}", vehicle.getVehicleName(), vehicle.getRegNumber(), vehicle.getUserId());
         return vehicleRepository.save(vehicle);
     }
@@ -88,6 +155,9 @@ public class VehicleService {
         Vehicle existing = vehicleRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Vehicle not found with ID: " + id));
 
+        if (updatedDetails.getVehicleTypeId() != null) existing.setVehicleTypeId(updatedDetails.getVehicleTypeId());
+        if (updatedDetails.getVehicleModelId() != null) existing.setVehicleModelId(updatedDetails.getVehicleModelId());
+        if (updatedDetails.getVehicleSubModelId() != null) existing.setVehicleSubModelId(updatedDetails.getVehicleSubModelId());
         if (updatedDetails.getRegNumber() != null) existing.setRegNumber(updatedDetails.getRegNumber());
         if (updatedDetails.getVehicleName() != null) existing.setVehicleName(updatedDetails.getVehicleName());
         if (updatedDetails.getCategory() != null) existing.setCategory(updatedDetails.getCategory());
@@ -115,6 +185,7 @@ public class VehicleService {
             existing.setRejectionReason(null);
         }
 
+        autoResolveVehicleMasterIds(existing);
         return vehicleRepository.save(existing);
     }
 
@@ -247,7 +318,8 @@ public class VehicleService {
         }
 
         String category = (vehicleType != null && !vehicleType.trim().isEmpty()) ? vehicleType.trim() : "Machinery";
-        String model = (machineryModel != null && !machineryModel.trim().isEmpty()) ? machineryModel.trim() : "JCB 3DX";
+        String defaultName = "Machinery".equalsIgnoreCase(category) ? "JCB 3DX" : category;
+        String model = (machineryModel != null && !machineryModel.trim().isEmpty()) ? machineryModel.trim() : defaultName;
 
         Vehicle defaultVehicle = Vehicle.builder()
                 .userId(userId)
@@ -269,8 +341,67 @@ public class VehicleService {
                 .isVahanSynced(false)
                 .build();
 
+        autoResolveVehicleMasterIds(defaultVehicle);
         Vehicle saved = vehicleRepository.save(defaultVehicle);
         log.info("Created blank vehicle record ID {} ({}) for UserId: {} / DriverId: {}", saved.getId(), model, userId, driverId);
         return saved;
+    }
+
+    public void autoResolveVehicleMasterIds(Vehicle v) {
+        if (v == null || jdbcTemplate == null) return;
+        try {
+            // 1. Resolve vehicle_type_id if null
+            if (v.getVehicleTypeId() == null && v.getCategory() != null && !v.getCategory().trim().isEmpty()) {
+                String cat = v.getCategory().trim().toLowerCase();
+                List<Map<String, Object>> types = jdbcTemplate.queryForList(
+                    "SELECT id FROM vehicle_types WHERE LOWER(name) = ? OR LOWER(code) = ? LIMIT 1", cat, cat);
+                if (!types.isEmpty()) {
+                    Object val = types.get(0).get("id");
+                    if (val instanceof Number) v.setVehicleTypeId(((Number) val).longValue());
+                }
+            }
+
+            // 2. Resolve vehicle_model_id if null
+            if (v.getVehicleModelId() == null) {
+                String modelName = (v.getMachineryModel() != null && !v.getMachineryModel().trim().isEmpty())
+                        ? v.getMachineryModel().trim()
+                        : (v.getVehicleName() != null ? v.getVehicleName().trim() : null);
+                if (modelName != null) {
+                    String mName = modelName.toLowerCase();
+                    List<Map<String, Object>> models = jdbcTemplate.queryForList(
+                        "SELECT id, vehicle_type_id FROM vehicle_models WHERE LOWER(name) = ? LIMIT 1", mName);
+                    if (!models.isEmpty()) {
+                        Object mId = models.get(0).get("id");
+                        if (mId instanceof Number) v.setVehicleModelId(((Number) mId).longValue());
+                        if (v.getVehicleTypeId() == null) {
+                            Object tId = models.get(0).get("vehicle_type_id");
+                            if (tId instanceof Number) v.setVehicleTypeId(((Number) tId).longValue());
+                        }
+                    }
+                }
+            }
+
+            // 3. Resolve vehicle_sub_model_id if null
+            if (v.getVehicleSubModelId() == null) {
+                String subName = (v.getMachinerySubCategory() != null && !v.getMachinerySubCategory().trim().isEmpty())
+                        ? v.getMachinerySubCategory().trim()
+                        : (v.getVehicleName() != null ? v.getVehicleName().trim() : null);
+                if (subName != null) {
+                    String sName = subName.toLowerCase();
+                    List<Map<String, Object>> subModels = jdbcTemplate.queryForList(
+                        "SELECT id, vehicle_model_id FROM vehicle_sub_models WHERE LOWER(name) = ? LIMIT 1", sName);
+                    if (!subModels.isEmpty()) {
+                        Object smId = subModels.get(0).get("id");
+                        if (smId instanceof Number) v.setVehicleSubModelId(((Number) smId).longValue());
+                        if (v.getVehicleModelId() == null) {
+                            Object mId = subModels.get(0).get("vehicle_model_id");
+                            if (mId instanceof Number) v.setVehicleModelId(((Number) mId).longValue());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Could not auto-resolve vehicle master IDs: {}", e.getMessage());
+        }
     }
 }

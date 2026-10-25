@@ -26,6 +26,7 @@ import java.util.Map;
 public class FcmNotificationService {
 
     private final DeviceTokenRepository deviceTokenRepository;
+    private final com.jcbbooking.repository.BookingSettingRepository bookingSettingRepository;
 
     @Value("${firebase.config.path:}")
     private String firebaseConfigPath;
@@ -49,10 +50,17 @@ public class FcmNotificationService {
                 serviceAccountStream = new ByteArrayInputStream(firebaseCredentialsJson.getBytes(StandardCharsets.UTF_8));
             } else if (firebaseConfigPath != null && !firebaseConfigPath.trim().isEmpty()) {
                 serviceAccountStream = new FileInputStream(firebaseConfigPath);
-            } else {
-                String envPath = System.getenv("FIREBASE_CONFIG_PATH");
-                if (envPath != null && !envPath.trim().isEmpty()) {
-                    serviceAccountStream = new FileInputStream(envPath);
+            }
+
+            if (serviceAccountStream == null) {
+                InputStream cpStream = getClass().getClassLoader().getResourceAsStream("firebase-service-account.json");
+                if (cpStream != null) {
+                    serviceAccountStream = cpStream;
+                } else {
+                    java.io.File localFile = new java.io.File("firebase-service-account.json");
+                    if (localFile.exists()) {
+                        serviceAccountStream = new FileInputStream(localFile);
+                    }
                 }
             }
 
@@ -118,6 +126,16 @@ public class FcmNotificationService {
         if (!isInitialized) {
             log.debug("FCM not initialized. Simulated push notification dispatched to user ID {}: {} - {}", userId, title, body);
             return;
+        }
+
+        try {
+            com.jcbbooking.model.BookingSetting setting = bookingSettingRepository.findBySettingKey("DEFAULT_SETTINGS").orElse(null);
+            if (setting != null && Boolean.FALSE.equals(setting.getPushEnabled())) {
+                log.info("Push notifications are disabled in admin settings. Skipping push alert for user ID {}", userId);
+                return;
+            }
+        } catch (Exception e) {
+            log.warn("Could not check pushEnabled setting: {}", e.getMessage());
         }
 
         try {

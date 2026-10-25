@@ -17,22 +17,22 @@ public class VehicleMasterController {
 
     private final JdbcTemplate jdbcTemplate;
 
-    @GetMapping({"/catalog", "/types"})
+    @GetMapping("/catalog")
     public ResponseEntity<Map<String, Object>> getCatalog() {
         Map<String, Object> response = new HashMap<>();
         try {
-            List<Map<String, Object>> types = jdbcTemplate.queryForList("SELECT * FROM vehicle_types");
+            List<Map<String, Object>> types = jdbcTemplate.queryForList("SELECT * FROM vehicle_types ORDER BY display_order ASC, id ASC");
             List<Map<String, Object>> models = new ArrayList<>();
             List<Map<String, Object>> subModels = new ArrayList<>();
 
             try {
-                models = jdbcTemplate.queryForList("SELECT * FROM vehicle_models");
+                models = jdbcTemplate.queryForList("SELECT * FROM vehicle_models ORDER BY display_order ASC, id ASC");
             } catch (Exception e) {
                 log.warn("Could not query vehicle_models: {}", e.getMessage());
             }
 
             try {
-                subModels = jdbcTemplate.queryForList("SELECT * FROM vehicle_sub_models");
+                subModels = jdbcTemplate.queryForList("SELECT * FROM vehicle_sub_models ORDER BY display_order ASC, id ASC");
             } catch (Exception e) {
                 log.warn("Could not query vehicle_sub_models: {}", e.getMessage());
             }
@@ -48,22 +48,204 @@ public class VehicleMasterController {
             log.error("Failed to query vehicle_types from DB: {}", e.getMessage());
         }
 
-        // Fallback to default catalog if DB query fails or table is empty
         response.put("success", true);
         response.put("message", "Catalog retrieved successfully");
         response.put("data", getFallbackCatalog());
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/models")
-    public ResponseEntity<Map<String, Object>> getModels() {
+    // ==========================================
+    // VEHICLE TYPES CRUD
+    // ==========================================
+
+    @GetMapping("/types")
+    public ResponseEntity<Map<String, Object>> getVehicleTypes(
+            @RequestParam(name = "active", required = false) Boolean active) {
         Map<String, Object> response = new HashMap<>();
         try {
-            List<Map<String, Object>> models = jdbcTemplate.queryForList("SELECT * FROM vehicle_models");
-            if (models != null && !models.isEmpty()) {
+            String sql = "SELECT * FROM vehicle_types";
+            List<Object> params = new ArrayList<>();
+            if (active != null) {
+                sql += " WHERE active = ?";
+                params.add(active);
+            }
+            sql += " ORDER BY display_order ASC, id ASC";
+
+            List<Map<String, Object>> list = jdbcTemplate.queryForList(sql, params.toArray());
+            List<Map<String, Object>> formatted = new ArrayList<>();
+            for (Map<String, Object> r : list) {
+                formatted.add(formatTypeRow(r));
+            }
+            response.put("success", true);
+            response.put("message", "Vehicle types retrieved successfully");
+            response.put("data", formatted);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to query vehicle_types from DB: {}", e.getMessage());
+            response.put("success", true);
+            response.put("message", "Fallback vehicle types");
+            response.put("data", getFallbackCatalog());
+            return ResponseEntity.ok(response);
+        }
+    }
+
+    @GetMapping("/types/{id}")
+    public ResponseEntity<Map<String, Object>> getVehicleTypeById(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            List<Map<String, Object>> list = jdbcTemplate.queryForList("SELECT * FROM vehicle_types WHERE id = ?", id);
+            if (!list.isEmpty()) {
+                response.put("success", true);
+                response.put("message", "Vehicle type retrieved successfully");
+                response.put("data", formatTypeRow(list.get(0)));
+                return ResponseEntity.ok(response);
+            }
+            response.put("success", false);
+            response.put("message", "Vehicle type not found with ID: " + id);
+            return ResponseEntity.status(404).body(response);
+        } catch (Exception e) {
+            log.error("Failed to get vehicle type id {}: {}", id, e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PostMapping("/types")
+    public ResponseEntity<Map<String, Object>> createVehicleType(@RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String name = body.get("name") != null ? String.valueOf(body.get("name")) : "";
+            String code = body.get("code") != null ? String.valueOf(body.get("code")) : "";
+            String description = body.get("description") != null ? String.valueOf(body.get("description")) : null;
+            String iconUrl = body.get("iconUrl") != null ? String.valueOf(body.get("iconUrl")) :
+                    (body.get("icon_url") != null ? String.valueOf(body.get("icon_url")) : null);
+            Object rawOrder = body.getOrDefault("displayOrder", body.get("display_order"));
+            Integer displayOrder = rawOrder != null ? Integer.parseInt(String.valueOf(rawOrder)) : 0;
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : true);
+
+            jdbcTemplate.update(
+                "INSERT INTO vehicle_types (name, code, description, icon_url, display_order, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
+                name, code, description, iconUrl, displayOrder, active
+            );
+
+            Long newId = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+            Map<String, Object> created = jdbcTemplate.queryForMap("SELECT * FROM vehicle_types WHERE id = ?", newId);
+
+            response.put("success", true);
+            response.put("message", "Vehicle type created successfully");
+            response.put("data", formatTypeRow(created));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to create vehicle type: {}", e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to create vehicle type: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PutMapping("/types/{id}")
+    public ResponseEntity<Map<String, Object>> updateVehicleType(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String name = body.get("name") != null ? String.valueOf(body.get("name")) : null;
+            String code = body.get("code") != null ? String.valueOf(body.get("code")) : null;
+            String description = body.get("description") != null ? String.valueOf(body.get("description")) : null;
+            String iconUrl = body.get("iconUrl") != null ? String.valueOf(body.get("iconUrl")) :
+                    (body.get("icon_url") != null ? String.valueOf(body.get("icon_url")) : null);
+            Object rawOrder = body.getOrDefault("displayOrder", body.get("display_order"));
+            Integer displayOrder = rawOrder != null ? Integer.parseInt(String.valueOf(rawOrder)) : 0;
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : true);
+
+            jdbcTemplate.update(
+                "UPDATE vehicle_types SET name = ?, code = ?, description = ?, icon_url = ?, display_order = ?, active = ?, updated_at = NOW() WHERE id = ?",
+                name, code, description, iconUrl, displayOrder, active, id
+            );
+
+            Map<String, Object> updated = jdbcTemplate.queryForMap("SELECT * FROM vehicle_types WHERE id = ?", id);
+            response.put("success", true);
+            response.put("message", "Vehicle type updated successfully");
+            response.put("data", formatTypeRow(updated));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to update vehicle type {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to update vehicle type: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PatchMapping("/types/{id}/status")
+    public ResponseEntity<Map<String, Object>> changeVehicleTypeStatus(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : false);
+
+            jdbcTemplate.update("UPDATE vehicle_types SET active = ?, updated_at = NOW() WHERE id = ?", active, id);
+            response.put("success", true);
+            response.put("message", "Vehicle type status updated successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to change vehicle type status {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @DeleteMapping("/types/{id}")
+    public ResponseEntity<Map<String, Object>> deleteVehicleType(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            jdbcTemplate.update("UPDATE vehicle_types SET active = false, updated_at = NOW() WHERE id = ?", id);
+            response.put("success", true);
+            response.put("message", "Vehicle type deactivated successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to deactivate vehicle type {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    // ==========================================
+    // VEHICLE MODELS CRUD
+    // ==========================================
+
+    @GetMapping("/models")
+    public ResponseEntity<Map<String, Object>> getModels(
+            @RequestParam(name = "typeId", required = false) Long typeId,
+            @RequestParam(name = "active", required = false) Boolean active) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String sql = "SELECT vm.*, vt.name AS vehicle_type_name FROM vehicle_models vm LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id WHERE 1=1";
+            List<Object> params = new ArrayList<>();
+            if (typeId != null) {
+                sql += " AND vm.vehicle_type_id = ?";
+                params.add(typeId);
+            }
+            if (active != null) {
+                sql += " AND vm.active = ?";
+                params.add(active);
+            }
+            sql += " ORDER BY vm.display_order ASC, vm.id ASC";
+
+            List<Map<String, Object>> rawModels = jdbcTemplate.queryForList(sql, params.toArray());
+            if (rawModels != null && !rawModels.isEmpty()) {
+                List<Map<String, Object>> formatted = new ArrayList<>();
+                for (Map<String, Object> r : rawModels) {
+                    formatted.add(formatModelRow(r));
+                }
                 response.put("success", true);
                 response.put("message", "Vehicle models retrieved successfully from DB");
-                response.put("data", models);
+                response.put("data", formatted);
                 return ResponseEntity.ok(response);
             }
         } catch (Exception e) {
@@ -76,15 +258,211 @@ public class VehicleMasterController {
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/sub-models")
-    public ResponseEntity<Map<String, Object>> getSubModels() {
+    @GetMapping("/types/{typeId}/models")
+    public ResponseEntity<Map<String, Object>> getModelsByType(
+            @PathVariable Long typeId,
+            @RequestParam(name = "active", required = false) Boolean active) {
         Map<String, Object> response = new HashMap<>();
         try {
-            List<Map<String, Object>> subModels = jdbcTemplate.queryForList("SELECT * FROM vehicle_sub_models");
-            if (subModels != null && !subModels.isEmpty()) {
+            String sql = "SELECT vm.*, vt.name AS vehicle_type_name FROM vehicle_models vm LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id WHERE vm.vehicle_type_id = ?";
+            List<Object> params = new ArrayList<>();
+            params.add(typeId);
+            if (active != null) {
+                sql += " AND vm.active = ?";
+                params.add(active);
+            }
+            sql += " ORDER BY vm.display_order ASC, vm.id ASC";
+
+            List<Map<String, Object>> rawList = jdbcTemplate.queryForList(sql, params.toArray());
+            List<Map<String, Object>> formatted = new ArrayList<>();
+            for (Map<String, Object> r : rawList) {
+                formatted.add(formatModelRow(r));
+            }
+            response.put("success", true);
+            response.put("message", "Models retrieved successfully");
+            response.put("data", formatted);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to query models for type {}: {}", typeId, e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @GetMapping("/models/{id}")
+    public ResponseEntity<Map<String, Object>> getModelById(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            List<Map<String, Object>> list = jdbcTemplate.queryForList(
+                "SELECT vm.*, vt.name AS vehicle_type_name FROM vehicle_models vm LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id WHERE vm.id = ?",
+                id
+            );
+            if (!list.isEmpty()) {
+                response.put("success", true);
+                response.put("message", "Vehicle model retrieved successfully");
+                response.put("data", formatModelRow(list.get(0)));
+                return ResponseEntity.ok(response);
+            }
+            response.put("success", false);
+            response.put("message", "Vehicle model not found with ID: " + id);
+            return ResponseEntity.status(404).body(response);
+        } catch (Exception e) {
+            log.error("Failed to get model by id {}: {}", id, e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PostMapping("/models")
+    public ResponseEntity<Map<String, Object>> createModel(@RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String name = body.get("name") != null ? String.valueOf(body.get("name")) : "";
+            String code = body.get("code") != null ? String.valueOf(body.get("code")) : null;
+            String description = body.get("description") != null ? String.valueOf(body.get("description")) : null;
+            Object rawTypeId = body.getOrDefault("vehicleTypeId", body.get("vehicle_type_id"));
+            Long vehicleTypeId = rawTypeId != null ? Long.parseLong(String.valueOf(rawTypeId)) : null;
+            String iconUrl = body.get("iconUrl") != null ? String.valueOf(body.get("iconUrl")) :
+                    (body.get("icon_url") != null ? String.valueOf(body.get("icon_url")) : null);
+            Object rawOrder = body.getOrDefault("displayOrder", body.get("display_order"));
+            Integer displayOrder = rawOrder != null ? Integer.parseInt(String.valueOf(rawOrder)) : 0;
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : true);
+
+            jdbcTemplate.update(
+                "INSERT INTO vehicle_models (name, code, description, vehicle_type_id, icon_url, display_order, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+                name, code, description, vehicleTypeId, iconUrl, displayOrder, active
+            );
+
+            Long newId = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+            Map<String, Object> created = jdbcTemplate.queryForMap(
+                "SELECT vm.*, vt.name AS vehicle_type_name FROM vehicle_models vm LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id WHERE vm.id = ?",
+                newId
+            );
+
+            response.put("success", true);
+            response.put("message", "Vehicle model created successfully");
+            response.put("data", formatModelRow(created));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to create vehicle model: {}", e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to create vehicle model: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PutMapping("/models/{id}")
+    public ResponseEntity<Map<String, Object>> updateModel(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String name = body.get("name") != null ? String.valueOf(body.get("name")) : null;
+            String code = body.get("code") != null ? String.valueOf(body.get("code")) : null;
+            String description = body.get("description") != null ? String.valueOf(body.get("description")) : null;
+            Object rawTypeId = body.getOrDefault("vehicleTypeId", body.get("vehicle_type_id"));
+            Long vehicleTypeId = rawTypeId != null ? Long.parseLong(String.valueOf(rawTypeId)) : null;
+            String iconUrl = body.get("iconUrl") != null ? String.valueOf(body.get("iconUrl")) :
+                    (body.get("icon_url") != null ? String.valueOf(body.get("icon_url")) : null);
+            Object rawOrder = body.getOrDefault("displayOrder", body.get("display_order"));
+            Integer displayOrder = rawOrder != null ? Integer.parseInt(String.valueOf(rawOrder)) : 0;
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : true);
+
+            jdbcTemplate.update(
+                "UPDATE vehicle_models SET name = ?, code = ?, description = ?, vehicle_type_id = ?, icon_url = ?, display_order = ?, active = ?, updated_at = NOW() WHERE id = ?",
+                name, code, description, vehicleTypeId, iconUrl, displayOrder, active, id
+            );
+
+            Map<String, Object> updatedModel = jdbcTemplate.queryForMap(
+                "SELECT vm.*, vt.name AS vehicle_type_name FROM vehicle_models vm LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id WHERE vm.id = ?",
+                id
+            );
+
+            response.put("success", true);
+            response.put("message", "Vehicle model updated successfully");
+            response.put("data", formatModelRow(updatedModel));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to update vehicle model id {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to update vehicle model: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PatchMapping("/models/{id}/status")
+    public ResponseEntity<Map<String, Object>> changeModelStatus(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : false);
+
+            jdbcTemplate.update("UPDATE vehicle_models SET active = ?, updated_at = NOW() WHERE id = ?", active, id);
+            response.put("success", true);
+            response.put("message", "Vehicle model status updated successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to update status for model id {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @DeleteMapping("/models/{id}")
+    public ResponseEntity<Map<String, Object>> deleteModel(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            jdbcTemplate.update("UPDATE vehicle_models SET active = false, updated_at = NOW() WHERE id = ?", id);
+            response.put("success", true);
+            response.put("message", "Vehicle model deactivated successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to delete/deactivate vehicle model id {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to deactivate vehicle model: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    // ==========================================
+    // VEHICLE SUB-MODELS CRUD
+    // ==========================================
+
+    @GetMapping("/sub-models")
+    public ResponseEntity<Map<String, Object>> getSubModels(
+            @RequestParam(name = "active", required = false) Boolean active) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String sql = "SELECT vsm.*, vm.name AS vehicle_model_name, vt.name AS vehicle_type_name, vt.id AS vehicle_type_id " +
+                    "FROM vehicle_sub_models vsm " +
+                    "LEFT JOIN vehicle_models vm ON vsm.vehicle_model_id = vm.id " +
+                    "LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id";
+            List<Object> params = new ArrayList<>();
+            if (active != null) {
+                sql += " WHERE vsm.active = ?";
+                params.add(active);
+            }
+            sql += " ORDER BY vsm.display_order ASC, vsm.id ASC";
+
+            List<Map<String, Object>> rawSubModels = jdbcTemplate.queryForList(sql, params.toArray());
+            if (rawSubModels != null && !rawSubModels.isEmpty()) {
+                List<Map<String, Object>> formatted = new ArrayList<>();
+                for (Map<String, Object> r : rawSubModels) {
+                    formatted.add(formatSubModelRow(r));
+                }
                 response.put("success", true);
                 response.put("message", "Vehicle sub-models retrieved successfully from DB");
-                response.put("data", subModels);
+                response.put("data", formatted);
                 return ResponseEntity.ok(response);
             }
         } catch (Exception e) {
@@ -96,6 +474,331 @@ public class VehicleMasterController {
         response.put("data", getFallbackSubModels());
         return ResponseEntity.ok(response);
     }
+
+    @GetMapping("/models/{modelId}/sub-models")
+    public ResponseEntity<Map<String, Object>> getSubModelsByModel(
+            @PathVariable Long modelId,
+            @RequestParam(name = "active", required = false) Boolean active) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String sql = "SELECT vsm.*, vm.name AS vehicle_model_name, vt.name AS vehicle_type_name, vt.id AS vehicle_type_id " +
+                    "FROM vehicle_sub_models vsm " +
+                    "LEFT JOIN vehicle_models vm ON vsm.vehicle_model_id = vm.id " +
+                    "LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id " +
+                    "WHERE vsm.vehicle_model_id = ?";
+            List<Object> params = new ArrayList<>();
+            params.add(modelId);
+            if (active != null) {
+                sql += " AND vsm.active = ?";
+                params.add(active);
+            }
+            sql += " ORDER BY vsm.display_order ASC, vsm.id ASC";
+
+            List<Map<String, Object>> rawList = jdbcTemplate.queryForList(sql, params.toArray());
+            List<Map<String, Object>> formatted = new ArrayList<>();
+            for (Map<String, Object> r : rawList) {
+                formatted.add(formatSubModelRow(r));
+            }
+            response.put("success", true);
+            response.put("message", "Sub-models retrieved successfully");
+            response.put("data", formatted);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to query sub-models for model {}: {}", modelId, e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @GetMapping("/sub-models/{id}")
+    public ResponseEntity<Map<String, Object>> getSubModelById(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            List<Map<String, Object>> list = jdbcTemplate.queryForList(
+                "SELECT vsm.*, vm.name AS vehicle_model_name, vt.name AS vehicle_type_name, vt.id AS vehicle_type_id " +
+                "FROM vehicle_sub_models vsm " +
+                "LEFT JOIN vehicle_models vm ON vsm.vehicle_model_id = vm.id " +
+                "LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id " +
+                "WHERE vsm.id = ?",
+                id
+            );
+            if (!list.isEmpty()) {
+                response.put("success", true);
+                response.put("message", "Vehicle sub-model retrieved successfully");
+                response.put("data", formatSubModelRow(list.get(0)));
+                return ResponseEntity.ok(response);
+            }
+            response.put("success", false);
+            response.put("message", "Vehicle sub-model not found with ID: " + id);
+            return ResponseEntity.status(404).body(response);
+        } catch (Exception e) {
+            log.error("Failed to get sub-model by id {}: {}", id, e.getMessage());
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PostMapping("/sub-models")
+    public ResponseEntity<Map<String, Object>> createSubModel(@RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String name = body.get("name") != null ? String.valueOf(body.get("name")) : "";
+            String code = body.get("code") != null ? String.valueOf(body.get("code")) : null;
+            String description = body.get("description") != null ? String.valueOf(body.get("description")) : null;
+            Object rawModelId = body.getOrDefault("vehicleModelId", body.get("vehicle_model_id"));
+            Long vehicleModelId = rawModelId != null ? Long.parseLong(String.valueOf(rawModelId)) : null;
+            String manufacturer = body.get("manufacturer") != null ? String.valueOf(body.get("manufacturer")) : null;
+            String machineClass = body.get("machineClass") != null ? String.valueOf(body.get("machineClass")) :
+                    (body.get("machine_class") != null ? String.valueOf(body.get("machine_class")) : null);
+            String horsePower = body.get("horsePower") != null ? String.valueOf(body.get("horsePower")) :
+                    (body.get("horse_power") != null ? String.valueOf(body.get("horse_power")) : null);
+            String capacity = body.get("capacity") != null ? String.valueOf(body.get("capacity")) : null;
+            String fuelType = body.get("fuelType") != null ? String.valueOf(body.get("fuelType")) :
+                    (body.get("fuel_type") != null ? String.valueOf(body.get("fuel_type")) : null);
+            String iconUrl = body.get("iconUrl") != null ? String.valueOf(body.get("iconUrl")) :
+                    (body.get("icon_url") != null ? String.valueOf(body.get("icon_url")) : null);
+            Object rawOrder = body.getOrDefault("displayOrder", body.get("display_order"));
+            Integer displayOrder = rawOrder != null ? Integer.parseInt(String.valueOf(rawOrder)) : 0;
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : true);
+
+            jdbcTemplate.update(
+                "INSERT INTO vehicle_sub_models (name, code, description, vehicle_model_id, manufacturer, machine_class, horse_power, capacity, fuel_type, icon_url, display_order, active, created_at, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+                name, code, description, vehicleModelId, manufacturer, machineClass, horsePower, capacity, fuelType, iconUrl, displayOrder, active
+            );
+
+            Long newId = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+            Map<String, Object> created = jdbcTemplate.queryForMap(
+                "SELECT vsm.*, vm.name AS vehicle_model_name, vt.name AS vehicle_type_name, vt.id AS vehicle_type_id " +
+                "FROM vehicle_sub_models vsm " +
+                "LEFT JOIN vehicle_models vm ON vsm.vehicle_model_id = vm.id " +
+                "LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id " +
+                "WHERE vsm.id = ?",
+                newId
+            );
+
+            response.put("success", true);
+            response.put("message", "Vehicle sub-model created successfully");
+            response.put("data", formatSubModelRow(created));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to create vehicle sub-model: {}", e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to create vehicle sub-model: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PutMapping("/sub-models/{id}")
+    public ResponseEntity<Map<String, Object>> updateSubModel(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            String name = body.get("name") != null ? String.valueOf(body.get("name")) : null;
+            String code = body.get("code") != null ? String.valueOf(body.get("code")) : null;
+            String description = body.get("description") != null ? String.valueOf(body.get("description")) : null;
+            Object rawModelId = body.getOrDefault("vehicleModelId", body.get("vehicle_model_id"));
+            Long vehicleModelId = rawModelId != null ? Long.parseLong(String.valueOf(rawModelId)) : null;
+            String manufacturer = body.get("manufacturer") != null ? String.valueOf(body.get("manufacturer")) : null;
+            String machineClass = body.get("machineClass") != null ? String.valueOf(body.get("machineClass")) :
+                    (body.get("machine_class") != null ? String.valueOf(body.get("machine_class")) : null);
+            String horsePower = body.get("horsePower") != null ? String.valueOf(body.get("horsePower")) :
+                    (body.get("horse_power") != null ? String.valueOf(body.get("horse_power")) : null);
+            String capacity = body.get("capacity") != null ? String.valueOf(body.get("capacity")) : null;
+            String fuelType = body.get("fuelType") != null ? String.valueOf(body.get("fuelType")) :
+                    (body.get("fuel_type") != null ? String.valueOf(body.get("fuel_type")) : null);
+            String iconUrl = body.get("iconUrl") != null ? String.valueOf(body.get("iconUrl")) :
+                    (body.get("icon_url") != null ? String.valueOf(body.get("icon_url")) : null);
+            Object rawOrder = body.getOrDefault("displayOrder", body.get("display_order"));
+            Integer displayOrder = rawOrder != null ? Integer.parseInt(String.valueOf(rawOrder)) : 0;
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : true);
+
+            jdbcTemplate.update(
+                "UPDATE vehicle_sub_models SET name = ?, code = ?, description = ?, vehicle_model_id = ?, manufacturer = ?, machine_class = ?, horse_power = ?, capacity = ?, fuel_type = ?, icon_url = ?, display_order = ?, active = ?, updated_at = NOW() " +
+                "WHERE id = ?",
+                name, code, description, vehicleModelId, manufacturer, machineClass, horsePower, capacity, fuelType, iconUrl, displayOrder, active, id
+            );
+
+            Map<String, Object> updated = jdbcTemplate.queryForMap(
+                "SELECT vsm.*, vm.name AS vehicle_model_name, vt.name AS vehicle_type_name, vt.id AS vehicle_type_id " +
+                "FROM vehicle_sub_models vsm " +
+                "LEFT JOIN vehicle_models vm ON vsm.vehicle_model_id = vm.id " +
+                "LEFT JOIN vehicle_types vt ON vm.vehicle_type_id = vt.id " +
+                "WHERE vsm.id = ?",
+                id
+            );
+
+            response.put("success", true);
+            response.put("message", "Vehicle sub-model updated successfully");
+            response.put("data", formatSubModelRow(updated));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to update vehicle sub-model {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Failed to update vehicle sub-model: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @PatchMapping("/sub-models/{id}/status")
+    public ResponseEntity<Map<String, Object>> changeSubModelStatus(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            Object rawActive = body.getOrDefault("active", body.get("is_active"));
+            Boolean active = (rawActive instanceof Boolean) ? (Boolean) rawActive :
+                    (rawActive != null ? Boolean.parseBoolean(String.valueOf(rawActive)) : false);
+
+            jdbcTemplate.update("UPDATE vehicle_sub_models SET active = ?, updated_at = NOW() WHERE id = ?", active, id);
+            response.put("success", true);
+            response.put("message", "Vehicle sub-model status updated successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to change sub-model status {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    @DeleteMapping("/sub-models/{id}")
+    public ResponseEntity<Map<String, Object>> deleteSubModel(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            jdbcTemplate.update("UPDATE vehicle_sub_models SET active = false, updated_at = NOW() WHERE id = ?", id);
+            response.put("success", true);
+            response.put("message", "Vehicle sub-model deactivated successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Failed to deactivate vehicle sub-model {}: {}", id, e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    // ==========================================
+    // ROW NORMALIZATION HELPERS
+    // ==========================================
+
+    private Map<String, Object> formatTypeRow(Map<String, Object> row) {
+        if (row == null) return null;
+        Map<String, Object> map = new HashMap<>(row);
+        Object icon = map.getOrDefault("icon_url", map.get("iconUrl"));
+        if (icon != null) {
+            map.put("iconUrl", icon);
+            map.put("icon_url", icon);
+        }
+        Object order = map.getOrDefault("display_order", map.get("displayOrder"));
+        if (order != null) {
+            map.put("displayOrder", order);
+            map.put("display_order", order);
+        }
+        Object activeObj = map.getOrDefault("active", map.get("is_active"));
+        boolean active = true;
+        if (activeObj instanceof Boolean) active = (Boolean) activeObj;
+        else if (activeObj instanceof Number) active = ((Number) activeObj).intValue() != 0;
+        map.put("active", active);
+        map.put("is_active", active);
+        return map;
+    }
+
+    private Map<String, Object> formatModelRow(Map<String, Object> row) {
+        if (row == null) return null;
+        Map<String, Object> map = new HashMap<>(row);
+        Object typeId = map.getOrDefault("vehicle_type_id", map.get("vehicleTypeId"));
+        if (typeId != null) {
+            map.put("vehicleTypeId", typeId);
+            map.put("vehicle_type_id", typeId);
+        }
+        Object typeName = map.getOrDefault("vehicle_type_name", map.get("vehicleTypeName"));
+        if (typeName != null) {
+            map.put("vehicleTypeName", typeName);
+            map.put("vehicle_type_name", typeName);
+        }
+        Object icon = map.getOrDefault("icon_url", map.get("iconUrl"));
+        if (icon != null) {
+            map.put("iconUrl", icon);
+            map.put("icon_url", icon);
+        }
+        Object order = map.getOrDefault("display_order", map.get("displayOrder"));
+        if (order != null) {
+            map.put("displayOrder", order);
+            map.put("display_order", order);
+        }
+        Object activeObj = map.getOrDefault("active", map.get("is_active"));
+        boolean active = true;
+        if (activeObj instanceof Boolean) active = (Boolean) activeObj;
+        else if (activeObj instanceof Number) active = ((Number) activeObj).intValue() != 0;
+        map.put("active", active);
+        map.put("is_active", active);
+        return map;
+    }
+
+    private Map<String, Object> formatSubModelRow(Map<String, Object> row) {
+        if (row == null) return null;
+        Map<String, Object> map = new HashMap<>(row);
+        Object modelId = map.getOrDefault("vehicle_model_id", map.get("vehicleModelId"));
+        if (modelId != null) {
+            map.put("vehicleModelId", modelId);
+            map.put("vehicle_model_id", modelId);
+        }
+        Object modelName = map.getOrDefault("vehicle_model_name", map.get("vehicleModelName"));
+        if (modelName != null) {
+            map.put("vehicleModelName", modelName);
+            map.put("vehicle_model_name", modelName);
+        }
+        Object typeId = map.getOrDefault("vehicle_type_id", map.get("vehicleTypeId"));
+        if (typeId != null) {
+            map.put("vehicleTypeId", typeId);
+            map.put("vehicle_type_id", typeId);
+        }
+        Object typeName = map.getOrDefault("vehicle_type_name", map.get("vehicleTypeName"));
+        if (typeName != null) {
+            map.put("vehicleTypeName", typeName);
+            map.put("vehicle_type_name", typeName);
+        }
+        Object machineClass = map.getOrDefault("machine_class", map.get("machineClass"));
+        if (machineClass != null) {
+            map.put("machineClass", machineClass);
+            map.put("machine_class", machineClass);
+        }
+        Object horsePower = map.getOrDefault("horse_power", map.get("horsePower"));
+        if (horsePower != null) {
+            map.put("horsePower", horsePower);
+            map.put("horse_power", horsePower);
+        }
+        Object fuelType = map.getOrDefault("fuel_type", map.get("fuelType"));
+        if (fuelType != null) {
+            map.put("fuelType", fuelType);
+            map.put("fuel_type", fuelType);
+        }
+        Object icon = map.getOrDefault("icon_url", map.get("iconUrl"));
+        if (icon != null) {
+            map.put("iconUrl", icon);
+            map.put("icon_url", icon);
+        }
+        Object order = map.getOrDefault("display_order", map.get("displayOrder"));
+        if (order != null) {
+            map.put("displayOrder", order);
+            map.put("display_order", order);
+        }
+        Object activeObj = map.getOrDefault("active", map.get("is_active"));
+        boolean active = true;
+        if (activeObj instanceof Boolean) active = (Boolean) activeObj;
+        else if (activeObj instanceof Number) active = ((Number) activeObj).intValue() != 0;
+        map.put("active", active);
+        map.put("is_active", active);
+        return map;
+    }
+
+    // ==========================================
+    // VAHAN INTEGRATION
+    // ==========================================
 
     @GetMapping({"/vahan-lookup/{regNumber}", "/vahan/fetch"})
     public ResponseEntity<Map<String, Object>> fetchVahanDetails(

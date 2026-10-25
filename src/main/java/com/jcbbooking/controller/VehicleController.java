@@ -35,8 +35,20 @@ public class VehicleController {
             return ResponseEntity.status(401).body(Map.of("success", false, "message", "Unauthorized"));
         }
         Long userId = userDetails.getId();
+        String rawPhone = userDetails.getUser().getPhone();
+        String cleanPhone = rawPhone != null ? rawPhone.replaceAll("[^0-9]", "") : "";
+        if (cleanPhone.length() > 10) {
+            cleanPhone = cleanPhone.substring(cleanPhone.length() - 10);
+        }
+
         Driver driver = driverRepository.findByUserId(userId)
-                .orElseGet(() -> driverRepository.findByPhone(userDetails.getUser().getPhone()).orElse(null));
+                .orElseGet(() -> (rawPhone != null ? driverRepository.findByPhone(rawPhone).orElse(null) : null));
+        if (driver == null && !cleanPhone.isEmpty()) {
+            final String last10 = cleanPhone;
+            driver = driverRepository.findAll().stream()
+                    .filter(d -> d.getPhone() != null && d.getPhone().replaceAll("[^0-9]", "").endsWith(last10))
+                    .findFirst().orElse(null);
+        }
         Long driverId = driver != null ? driver.getId() : null;
 
         List<Vehicle> list = List.of();

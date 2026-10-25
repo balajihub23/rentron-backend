@@ -9,6 +9,7 @@ import java.util.Optional;
 @Repository
 public interface DeviceTokenRepository extends JpaRepository<DeviceToken, Long> {
     List<DeviceToken> findAllByUserIdAndActiveTrue(Long userId);
+    List<DeviceToken> findAllByUserId(Long userId);
     Optional<DeviceToken> findByUserIdAndDeviceToken(Long userId, String deviceToken);
     void deleteAllByDeviceToken(String deviceToken);
 }
