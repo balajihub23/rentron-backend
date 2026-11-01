@@ -65,6 +65,7 @@ public class WebSocketNotificationService {
             Map<String, Object> event = new HashMap<>();
             event.put("eventId", "EVT-" + UUID.randomUUID().toString());
             event.put("eventType", "DRIVER_OFFER");
+            event.put("type", "NEW_BOOKING_OFFER");
             event.put("timestamp", LocalDateTime.now().toString());
             event.put("version", "1.0");
             event.put("payload", offerPayload);
@@ -78,6 +79,15 @@ public class WebSocketNotificationService {
                     (Object) event
             );
             messagingTemplate.convertAndSend("/topic/booking-offers/" + userId, (Object) event);
+
+            if (offerPayload != null) {
+                if (offerPayload.containsKey("driverId") && offerPayload.get("driverId") != null) {
+                    messagingTemplate.convertAndSend("/topic/booking-offers/" + offerPayload.get("driverId"), (Object) event);
+                }
+                if (offerPayload.containsKey("candidateId") && offerPayload.get("candidateId") != null) {
+                    messagingTemplate.convertAndSend("/topic/booking-offers/" + offerPayload.get("candidateId"), (Object) event);
+                }
+            }
         } catch (Exception e) {
             log.error("Failed to send WebSocket booking offer to user {}: {}", userId, e.getMessage());
         }
@@ -144,4 +154,57 @@ public class WebSocketNotificationService {
             log.error("Failed to send WebSocket operator invitation to phone {}: {}", phone, e.getMessage());
         }
     }
+
+    /**
+     * Broadcasts real-time driver online/offline/location change so Customer App updates live without refresh.
+     */
+    public void broadcastDriverStatus(Long driverId, Long userId, boolean isOnline, String vehicleType, Double lat, Double lng) {
+        log.info("Broadcasting driver status to /topic/drivers/status: driverId={}, isOnline={}, vehicleType={}", driverId, isOnline, vehicleType);
+        try {
+            Map<String, Object> event = new HashMap<>();
+            event.put("eventId", "EVT-" + UUID.randomUUID().toString());
+            event.put("eventType", isOnline ? "DRIVER_ONLINE" : "DRIVER_OFFLINE");
+            event.put("driverId", driverId);
+            event.put("userId", userId);
+            event.put("isOnline", isOnline);
+            event.put("vehicleType", vehicleType);
+            event.put("latitude", lat);
+            event.put("longitude", lng);
+            event.put("timestamp", LocalDateTime.now().toString());
+
+            messagingTemplate.convertAndSend("/topic/drivers/status", (Object) event);
+        } catch (Exception e) {
+            log.error("Failed to broadcast driver status via WebSocket: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Sends scheduled ride intimate alert to driver 15/10 mins before pickup.
+     */
+    public void sendScheduledRideAlertToDriver(Long userId, Map<String, Object> alertPayload) {
+        log.info("Sending STOMP scheduled ride intimate alert to user ID {}", userId);
+        try {
+            Map<String, Object> event = new HashMap<>();
+            event.put("eventId", "EVT-" + UUID.randomUUID().toString());
+            event.put("eventType", "SCHEDULED_RIDE_ALERT");
+            event.put("type", "SCHEDULED_RIDE_ALERT");
+            event.put("timestamp", LocalDateTime.now().toString());
+            event.put("version", "1.0");
+            event.put("payload", alertPayload);
+            if (alertPayload != null) {
+                event.putAll(alertPayload);
+            }
+
+            messagingTemplate.convertAndSendToUser(
+                    String.valueOf(userId),
+                    "/queue/booking-offers",
+                    (Object) event
+            );
+            messagingTemplate.convertAndSend("/topic/booking-offers/" + userId, (Object) event);
+            messagingTemplate.convertAndSend("/topic/scheduled-rides", (Object) event);
+        } catch (Exception e) {
+            log.error("Failed to send WebSocket scheduled ride alert to user {}: {}", userId, e.getMessage());
+        }
+    }
 }
+

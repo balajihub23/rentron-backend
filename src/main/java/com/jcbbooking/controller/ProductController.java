@@ -18,11 +18,48 @@ import java.util.List;
 public class ProductController {
 
     private final ProductRepository productRepository;
+    private final com.jcbbooking.repository.PricingRepository pricingRepository;
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<Product>>> getAllProducts() {
         log.info("REST request to get all products");
         return ResponseEntity.ok(ApiResponse.success("Products retrieved successfully", productRepository.findAll()));
+    }
+
+    @GetMapping("/machinery-catalog")
+    public ResponseEntity<ApiResponse<List<java.util.Map<String, Object>>>> getMachineryCatalog() {
+        log.info("REST request to get dynamic machinery catalog");
+        List<Product> machineryProducts = productRepository.findAll().stream()
+                .filter(p -> Boolean.TRUE.equals(p.getActive()))
+                .filter(p -> "HEAVY_EQUIPMENT".equalsIgnoreCase(p.getProductType())
+                        || "JCB".equalsIgnoreCase(p.getProductType())
+                        || "MACHINERY".equalsIgnoreCase(p.getProductType())
+                        || "EQUIPMENT".equalsIgnoreCase(p.getProductType()))
+                .toList();
+
+        List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+        for (Product p : machineryProducts) {
+            com.jcbbooking.model.Pricing pricing = pricingRepository.findByProductId(p.getId()).orElse(null);
+            java.util.Map<String, Object> item = new java.util.HashMap<>();
+            item.put("id", p.getCode() != null ? p.getCode().toLowerCase() : String.valueOf(p.getId()));
+            item.put("productId", p.getId());
+            item.put("name", p.getName());
+            item.put("code", p.getCode());
+            item.put("category", p.getCategory() != null ? p.getCategory() : "Construction");
+            item.put("type", p.getCategory() != null ? p.getCategory() : "Heavy Equipment");
+            item.put("hourlyRate", (pricing != null && pricing.getPerHourPrice() != null && pricing.getPerHourPrice() > 0)
+                    ? pricing.getPerHourPrice()
+                    : (pricing != null && pricing.getBasePrice() != null ? pricing.getBasePrice() : 1000.0));
+            item.put("dailyRate", (pricing != null && pricing.getDailyRate() != null && pricing.getDailyRate() > 0)
+                    ? pricing.getDailyRate()
+                    : 8000.0);
+            item.put("advancePercentage", 30);
+            item.put("image", p.getImageUrl() != null && !p.getImageUrl().isEmpty() ? p.getImageUrl() : "🚜");
+            item.put("specs", p.getDescription());
+            item.put("description", p.getDescription() != null ? p.getDescription() : p.getName());
+            result.add(item);
+        }
+        return ResponseEntity.ok(ApiResponse.success("Machinery catalog retrieved successfully", result));
     }
 
     @GetMapping("/{id}")

@@ -42,6 +42,7 @@ public class BookingController {
     private final ProductRepository productRepository;
     private final RentalPackageRepository rentalPackageRepository;
     private final com.jcbbooking.service.FcmNotificationService fcmNotificationService;
+    private final com.jcbbooking.service.scheduler.BookingSchedulerService bookingSchedulerService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping
@@ -76,8 +77,9 @@ public class BookingController {
             }
             return ResponseEntity.ok(ApiResponse.success("No bookings found", List.of()));
         } else {
-            // Scoped strictly to authenticated CUSTOMER
-            List<Booking> customerBookings = bookingRepository.findAllByCustomerIdOrderByCreatedAtDesc(userDetails.getId());
+            // Scoped strictly to authenticated CUSTOMER (exclude unaccepted / failed searches)
+            List<Booking> customerBookings = new ArrayList<>(bookingRepository.findAllByCustomerIdOrderByCreatedAtDesc(userDetails.getId()));
+            customerBookings.removeIf(b -> "NO_DRIVER_AVAILABLE".equalsIgnoreCase(b.getStatus()) || "SEARCHING_DRIVER".equalsIgnoreCase(b.getStatus()));
             return ResponseEntity.ok(ApiResponse.success("Customer bookings retrieved successfully", customerBookings));
         }
     }
@@ -290,6 +292,8 @@ public class BookingController {
         // Trigger Auto-Assignment Engine for driver search ONLY for immediate rides
         if ("SEARCHING_DRIVER".equalsIgnoreCase(savedBooking.getStatus())) {
             bookingAssignmentService.startAutoAssignmentProcess(savedBooking.getId());
+        } else if ("SCHEDULED".equalsIgnoreCase(savedBooking.getStatus())) {
+            bookingSchedulerService.scheduleScheduledBookingDispatch(savedBooking, 15);
         }
 
         log.info("Booking created successfully. ID: {}, Number: {}, Status: {}, Payment: {}",
@@ -677,6 +681,7 @@ public class BookingController {
             }
         } else if ("CANCELLED".equalsIgnoreCase(newStatus)) {
             booking.setCancellationReason(reason != null ? reason : "Cancelled by user");
+            bookingSchedulerService.cancelScheduledBookingJob(booking.getId());
         }
 
         Booking saved = bookingRepository.save(booking);
@@ -704,6 +709,25 @@ public class BookingController {
             @RequestParam(required = false) String reason,
             @AuthenticationPrincipal CustomUserDetails userDetails) {
         log.info("REST request to cancel booking ID {}", id);
+
+        Booking booking = bookingRepository.findById(id).orElse(null);
+        if (booking != null && "SEARCHING_DRIVER".equalsIgnoreCase(booking.getStatus()) && booking.getDriverId() == null) {
+            log.info("Cancelling unaccepted search booking ID {}. Removing temporary search record.", id);
+            try {
+                bookingAssignmentRepository.deleteAllByBookingId(id);
+                bookingEventHistoryRepository.deleteAllByBookingId(id);
+                bookingRepository.deleteById(id);
+            } catch (Exception e) {
+                log.warn("Failed to delete unaccepted search booking ID {}: {}", id, e.getMessage());
+            }
+            webSocketNotificationService.sendBookingLifecycleEvent(id, "CANCELLED", Map.of(
+                    "bookingId", id,
+                    "status", "CANCELLED",
+                    "reason", reason != null ? reason : "Cancelled while searching"
+            ));
+            return ResponseEntity.ok(ApiResponse.success("Booking search cancelled", booking));
+        }
+
         return updateBookingStatus(id, "CANCELLED", reason != null ? reason : "Cancelled by customer", userDetails);
     }
 
@@ -922,6 +946,54 @@ public class BookingController {
         } catch (Exception e) {
             log.error("Failed to record event history: {}", e.getMessage());
         }
+    }
+
+    @PostMapping("/{id}/rate")
+    @Transactional
+    public ResponseEntity<ApiResponse<Map<String, Object>>> rateDriver(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> ratingPayload) {
+        log.info("REST request to rate driver for booking ID {}", id);
+        Booking booking = bookingRepository.findById(id).orElse(null);
+        if (booking == null) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("Booking not found"));
+        }
+
+        double parsedScore = 5.0;
+        if (ratingPayload.containsKey("score") && ratingPayload.get("score") != null) {
+            parsedScore = Double.parseDouble(ratingPayload.get("score").toString());
+        } else if (ratingPayload.containsKey("rating") && ratingPayload.get("rating") != null) {
+            parsedScore = Double.parseDouble(ratingPayload.get("rating").toString());
+        }
+        final double score = parsedScore;
+
+        String comment = ratingPayload.containsKey("comment") ? (String) ratingPayload.get("comment") : "";
+        if (comment == null || comment.isEmpty()) {
+            comment = ratingPayload.containsKey("notes") ? (String) ratingPayload.get("notes") : "";
+        }
+
+        if (booking.getDriverId() != null) {
+            driverRepository.findById(booking.getDriverId()).ifPresent(driver -> {
+                double currentRating = driver.getRating() != null ? driver.getRating() : 5.0;
+                int totalRatings = driver.getTotalJobs() != null && driver.getTotalJobs() > 0 ? driver.getTotalJobs() : 1;
+                double newRating = Math.round(((currentRating * totalRatings + score) / (totalRatings + 1)) * 10.0) / 10.0;
+                driver.setRating(newRating);
+                driverRepository.save(driver);
+            });
+        }
+
+        if (comment != null && !comment.trim().isEmpty()) {
+            booking.setNotes("Customer Rating: " + score + "★ - " + comment);
+            bookingRepository.save(booking);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("bookingId", id);
+        result.put("rating", score);
+        result.put("comment", comment);
+        result.put("status", "SUCCESS");
+
+        return ResponseEntity.ok(ApiResponse.success("Thank you for your rating!", result));
     }
 
     private static String hashOtp(String otp) {

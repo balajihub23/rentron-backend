@@ -207,6 +207,9 @@ public class DriverProfileController {
             driver.setGpsAccuracy(effectiveAcc);
             driver.setLocationUpdatedAt(LocalDateTime.now());
             driverRepository.save(driver);
+
+            // Broadcast real-time location to active observers
+            webSocketNotificationService.broadcastDriverStatus(driver.getId(), driver.getUserId(), Boolean.TRUE.equals(driver.getIsOnline()), driver.getSelectedVehicleType(), effectiveLat, effectiveLng);
         }
 
         return ResponseEntity.ok(ApiResponse.success("Location updated successfully"));
@@ -245,6 +248,7 @@ public class DriverProfileController {
 
         driver.setIsOnline(targetOnline);
         if (Boolean.TRUE.equals(targetOnline)) {
+            driver.setLocationUpdatedAt(LocalDateTime.now());
             if (!"SUSPENDED".equalsIgnoreCase(driver.getStatus())) {
                 driver.setStatus("ACTIVE");
             }
@@ -254,6 +258,16 @@ public class DriverProfileController {
             }
         }
         driverRepository.save(driver);
+
+        // Real-time WebSocket broadcast so Customer App updates drivers without refresh
+        webSocketNotificationService.broadcastDriverStatus(
+                driver.getId(),
+                driver.getUserId(),
+                Boolean.TRUE.equals(targetOnline),
+                driver.getSelectedVehicleType(),
+                driver.getLatitude(),
+                driver.getLongitude()
+        );
 
         return ResponseEntity.ok(ApiResponse.success("Online status updated to " + targetOnline, targetOnline));
     }

@@ -167,7 +167,12 @@ public class BookingAssignmentService {
                 offerPayload.put("vehicleType", vType);
                 offerPayload.put("bookingType", booking.getBookingType());
                 offerPayload.put("driverAmount", booking.getDriverAmount() != null ? booking.getDriverAmount() : (booking.getTotalAmount() != null ? booking.getTotalAmount() * 0.8 : 0.0));
-                offerPayload.put("estimatedDurationMinutes", booking.getEstimatedDurationMinutes());
+                offerPayload.put("candidateId", cand.id);
+                offerPayload.put("candidateType", cand.type);
+                if ("DRIVER".equalsIgnoreCase(cand.type)) {
+                    offerPayload.put("driverId", cand.id);
+                }
+                offerPayload.put("userId", cand.userId);
                 offerPayload.put("offeredAt", LocalDateTime.now().toString());
 
                 webSocketNotificationService.sendBookingOfferToUser(cand.userId, offerPayload);
@@ -220,20 +225,26 @@ public class BookingAssignmentService {
     }
 
     private void handleAdminFallback(Booking booking, BookingSetting settings) {
-        log.warn("All Progressive Auto-Assignment Layers completed for Booking ID {} without acceptance.", booking.getId());
-        booking.setStatus("NO_DRIVER_AVAILABLE");
-        bookingRepository.save(booking);
-
-        recordEventHistory(booking.getId(), "SEARCHING_DRIVER", "NO_DRIVER_AVAILABLE", null, "SYSTEM", "No driver available in maximum radius");
-
+        Long bookingId = booking.getId();
         Map<String, Object> alert = new HashMap<>();
-        alert.put("bookingId", booking.getId());
+        alert.put("bookingId", bookingId);
         alert.put("bookingNumber", booking.getBookingNumber());
-        alert.put("message", "No driver or contractor accepted the booking within maximum radius of " + settings.getMaxRadiusKm() + " KM.");
+        alert.put("message", "No driver accepted the booking within maximum radius of " + settings.getMaxRadiusKm() + " KM.");
         alert.put("maxRadiusKm", settings.getMaxRadiusKm());
 
         webSocketNotificationService.sendAdminAssignmentFailedNotification(alert);
-        webSocketNotificationService.sendBookingLifecycleEvent(booking.getId(), "NO_DRIVER_AVAILABLE", alert);
+        webSocketNotificationService.sendBookingLifecycleEvent(bookingId, "NO_DRIVER_AVAILABLE", alert);
+
+        try {
+            bookingAssignmentRepository.deleteAllByBookingId(bookingId);
+            bookingEventHistoryRepository.deleteAllByBookingId(bookingId);
+            bookingRepository.deleteById(bookingId);
+            log.info("Cleaned up unaccepted booking request ID {} since no driver accepted", bookingId);
+        } catch (Exception e) {
+            log.warn("Failed to delete unaccepted booking ID {}: {}", bookingId, e.getMessage());
+            booking.setStatus("NO_DRIVER_AVAILABLE");
+            bookingRepository.save(booking);
+        }
     }
 
     /**
@@ -437,11 +448,11 @@ public class BookingAssignmentService {
             // Must have valid coordinates
             if (d.getLatitude() != null && d.getLongitude() != null) {
                 // Must be online
-                if (Boolean.TRUE.equals(d.getIsOnline()) || "ACTIVE".equalsIgnoreCase(d.getStatus())) {
+                if (Boolean.TRUE.equals(d.getIsOnline())) {
                     // Vehicle type matching
                     if (isVehicleTypeMatch(d.getSelectedVehicleType(), requestedVehicleType)) {
-                        // Location freshness
-                        if (d.getLocationUpdatedAt() == null || d.getLocationUpdatedAt().isAfter(staleThreshold)) {
+                        // Location freshness: active online drivers are always eligible regardless of location age
+                        if (Boolean.TRUE.equals(d.getIsOnline()) || d.getLocationUpdatedAt() == null || d.getLocationUpdatedAt().isAfter(staleThreshold)) {
                             // Check conflicting active booking
                             boolean hasActiveRide = bookingRepository.existsByDriverIdAndStatusIn(
                                     d.getId(), List.of("ASSIGNED", "DRIVER_ON_THE_WAY", "ARRIVED", "STARTED", "IN_PROGRESS")
@@ -453,6 +464,8 @@ public class BookingAssignmentService {
 
                                 if (!alreadyRejected) {
                                     double dist = HaversineDistanceUtil.calculateDistanceKm(pickupLat, pickupLon, d.getLatitude(), d.getLongitude());
+                                    log.info("Checking driver ID {} (userId: {}), dist: {} km, minR: {}, maxR: {}",
+                                            d.getId(), d.getUserId(), dist, minRadiusKm, maxRadiusKm);
                                     if (dist >= minRadiusKm && dist <= maxRadiusKm) {
                                         if (strategy.isDriverAvailable(d.getId(), booking)) {
                                             candidates.add(new CandidateWrapper("DRIVER", d.getId(), d.getUserId(), dist, d.getRating() != null ? d.getRating() : 4.0));
@@ -525,8 +538,8 @@ public class BookingAssignmentService {
         if (dType.equals(rType)) return true;
 
         if (isMachineryGroup(dType) && isMachineryGroup(rType)) return true;
-        if (dType.contains("CAR") && (rType.contains("CAR") || rType.contains("SEDAN") || rType.contains("SUV") || rType.contains("MINI"))) return true;
-        if (rType.contains("CAR") && (dType.contains("CAR") || dType.contains("SEDAN") || dType.contains("SUV") || dType.contains("MINI"))) return true;
+        if (dType.contains("CAR") && (rType.contains("CAR") || rType.contains("SEDAN") || rType.contains("SUV") || rType.contains("MINI") || rType.contains("HATCHBACK"))) return true;
+        if (rType.contains("CAR") && (dType.contains("CAR") || dType.contains("SEDAN") || dType.contains("SUV") || dType.contains("MINI") || dType.contains("HATCHBACK"))) return true;
         if (dType.contains("AUTO") && rType.contains("AUTO")) return true;
         if (dType.contains("BIKE") && (rType.contains("BIKE") || rType.contains("SCOOTER"))) return true;
         if (dType.contains("SCOOTER") && (rType.contains("SCOOTER") || rType.contains("BIKE"))) return true;
@@ -537,6 +550,104 @@ public class BookingAssignmentService {
         if (dType.contains("SUV") && (rType.contains("SUV") || rType.contains("CAR"))) return true;
 
         return false;
+    }
+
+    @Transactional
+    public void dispatchScheduledBookingWithDriverAlerts(Long bookingId, int leadMinutes) {
+        log.info("Dispatching scheduled booking ID {} with leadMinutes {}", bookingId, leadMinutes);
+        Booking booking = bookingRepository.findById(bookingId).orElse(null);
+        if (booking == null) {
+            log.warn("Scheduled booking ID {} not found", bookingId);
+            return;
+        }
+
+        if (!"SCHEDULED".equalsIgnoreCase(booking.getStatus())) {
+            log.info("Booking ID {} is not in SCHEDULED status (Current: {}). Skipping scheduled dispatch.", bookingId, booking.getStatus());
+            return;
+        }
+
+        booking.setStatus("SEARCHING_DRIVER");
+        bookingRepository.save(booking);
+
+        recordEventHistory(bookingId, "SCHEDULED", "SEARCHING_DRIVER", booking.getCustomerId(), "SYSTEM",
+                "Quartz scheduled dispatch triggered " + leadMinutes + " mins prior to pickup");
+
+        // Broadcast to customer so UI transitions live
+        webSocketNotificationService.sendBookingLifecycleEvent(bookingId, "SEARCHING_DRIVER", Map.of(
+                "bookingId", bookingId,
+                "status", "SEARCHING_DRIVER",
+                "message", "Searching nearby drivers for your scheduled ride..."
+        ));
+
+        // Intimate nearby drivers via WebSocket and FCM Push Notification
+        double pickupLat = booking.getPickupLatitude() != null ? booking.getPickupLatitude() : 0.0;
+        double pickupLng = booking.getPickupLongitude() != null ? booking.getPickupLongitude() : 0.0;
+        if ((pickupLat == 0.0 || pickupLng == 0.0) && booking.getPickupAddressId() != null) {
+            Address pickupAddr = addressRepository.findById(booking.getPickupAddressId()).orElse(null);
+            if (pickupAddr != null && pickupAddr.getLatitude() != null && pickupAddr.getLongitude() != null) {
+                pickupLat = pickupAddr.getLatitude();
+                pickupLng = pickupAddr.getLongitude();
+            }
+        }
+
+        String targetVehicle = null;
+        if (booking.getProductId() != null) {
+            Product p = productRepository.findById(booking.getProductId()).orElse(null);
+            if (p != null) {
+                targetVehicle = (p.getCategory() != null && !p.getCategory().trim().isEmpty() && !"RIDE".equalsIgnoreCase(p.getCategory()))
+                        ? p.getCategory() : (p.getName() != null ? p.getName() : p.getProductType());
+            }
+        }
+
+        String pickupLocation = booking.getPickupAddressText() != null ? booking.getPickupAddressText() : "Nearby";
+        String dropLocation = booking.getDestinationAddressText() != null ? booking.getDestinationAddressText() : "";
+        Double totalFare = booking.getTotalAmount() != null ? booking.getTotalAmount() : booking.getEstimatedFare();
+
+        List<Driver> activeDrivers = driverRepository.findAllByStatus("ACTIVE");
+        int intimatedCount = 0;
+
+        for (Driver d : activeDrivers) {
+            if (!Boolean.TRUE.equals(d.getIsOnline())) continue;
+            if (d.getLatitude() == null || d.getLongitude() == null) continue;
+
+            if (isVehicleTypeMatch(d.getSelectedVehicleType(), targetVehicle)) {
+                double dist = HaversineDistanceUtil.calculateDistanceKm(pickupLat, pickupLng, d.getLatitude(), d.getLongitude());
+                if (dist <= 15.0) {
+                    Map<String, Object> alert = new HashMap<>();
+                    alert.put("bookingId", booking.getId());
+                    alert.put("bookingNumber", booking.getBookingNumber());
+                    alert.put("pickupLocation", pickupLocation);
+                    alert.put("dropLocation", dropLocation);
+                    alert.put("scheduledPickupAt", booking.getScheduledPickupAt() != null ? booking.getScheduledPickupAt().toString() : "");
+                    alert.put("leadMinutes", leadMinutes);
+                    alert.put("distanceKm", Math.round(dist * 10.0) / 10.0);
+                    alert.put("totalAmount", totalFare != null ? totalFare : 0.0);
+                    alert.put("vehicleType", targetVehicle != null ? targetVehicle : "");
+                    alert.put("message", "⏰ Scheduled Ride Alert: Pickup in " + leadMinutes + " mins!");
+
+                    // 1. WebSocket alert to driver
+                    webSocketNotificationService.sendScheduledRideAlertToDriver(d.getUserId(), alert);
+
+                    // 2. FCM Push Notification
+                    Map<String, String> fcmData = new HashMap<>();
+                    fcmData.put("bookingId", String.valueOf(booking.getId()));
+                    fcmData.put("bookingNumber", booking.getBookingNumber() != null ? booking.getBookingNumber() : "");
+                    fcmData.put("type", "SCHEDULED_RIDE_ALERT");
+                    fcmNotificationService.sendNotificationToUser(
+                            d.getUserId(),
+                            "⏰ Scheduled Ride in " + leadMinutes + " Mins!",
+                            "Pickup at " + pickupLocation + " • ₹" + (totalFare != null ? totalFare : "0"),
+                            fcmData
+                    );
+
+                    intimatedCount++;
+                }
+            }
+        }
+        log.info("Intimated {} active nearby drivers for scheduled booking ID {}", intimatedCount, bookingId);
+
+        // Start auto assignment dispatch
+        startAutoAssignmentProcess(booking.getId());
     }
 
     private static boolean isMachineryGroup(String type) {

@@ -530,6 +530,7 @@ public class DatabaseInitializer implements CommandLineRunner {
         }
 
         seedFigmaRideProductsAndPricing();
+        seedMachineryProductsAndPricing();
 
         log.info("System successfully seeded and ready!");
     }
@@ -626,6 +627,68 @@ public class DatabaseInitializer implements CommandLineRunner {
             pricing.setBasePrice(price);
             pricing.setMinimumFare(price);
             pricing.setPerKmPrice(perKm);
+            pricing.setActive(true);
+            pricingRepository.save(pricing);
+        }
+    }
+
+    private void seedMachineryProductsAndPricing() {
+        log.info("Ensuring dynamic machinery catalog products and pricings exist in database...");
+        seedOrUpdateMachineryProduct("JCB 3DX Super Eco", "JCB_3DX", "Backhoe Loader",
+                "Versatile heavy equipment for excavation, trenching, loading, and earthmoving.", 1000.0, 8000.0, "🚜");
+        seedOrUpdateMachineryProduct("Mini Excavator (3-5 Ton)", "MINI_EXCAVATOR", "Excavator",
+                "Ideal for urban sites, landscaping, narrow trenching, and utility works.", 850.0, 6800.0, "🏗️");
+        seedOrUpdateMachineryProduct("Heavy Excavator (20 Ton)", "HEAVY_EXCAVATOR", "Excavator",
+                "Heavy duty crawler excavator for mining, quarrying, and foundation excavation.", 1800.0, 14400.0, "🏗️");
+        seedOrUpdateMachineryProduct("Vibratory Soil Roller", "ROAD_ROLLER", "Compactor",
+                "Used for soil compaction, road base preparation, and asphalt rolling.", 1200.0, 9600.0, "🚜");
+        seedOrUpdateMachineryProduct("Hydraulic Mobile Crane", "MOBILE_CRANE", "Crane",
+                "For heavy lifting, structural erection, and equipment placing.", 2200.0, 17600.0, "🏗️");
+    }
+
+    private void seedOrUpdateMachineryProduct(String name, String code, String category, String description, double hourlyRate, double dailyRate, String icon) {
+        Product product = productRepository.findByCode(code).orElse(null);
+        if (product == null) {
+            product = Product.builder()
+                    .name(name)
+                    .code(code)
+                    .productType("HEAVY_EQUIPMENT")
+                    .category(category)
+                    .description(description)
+                    .imageUrl(icon)
+                    .active(true)
+                    .build();
+            product = productRepository.save(product);
+            log.info("Created dynamic machinery product: {}", name);
+        } else {
+            product.setName(name);
+            product.setCategory(category);
+            product.setProductType("HEAVY_EQUIPMENT");
+            product.setDescription(description);
+            product.setImageUrl(icon);
+            product.setActive(true);
+            product = productRepository.save(product);
+        }
+
+        Pricing pricing = pricingRepository.findByProductId(product.getId()).orElse(null);
+        if (pricing == null) {
+            pricing = Pricing.builder()
+                    .productId(product.getId())
+                    .pricingModel("HEAVY_EQUIPMENT")
+                    .chargingMethod("HOURLY_DAILY")
+                    .basePrice(hourlyRate)
+                    .perHourPrice(hourlyRate)
+                    .dailyRate(dailyRate)
+                    .operatorCharge(200.0)
+                    .bookingFee(50.0)
+                    .taxPercentage(5.0)
+                    .active(true)
+                    .build();
+            pricingRepository.save(pricing);
+        } else {
+            pricing.setBasePrice(hourlyRate);
+            pricing.setPerHourPrice(hourlyRate);
+            pricing.setDailyRate(dailyRate);
             pricing.setActive(true);
             pricingRepository.save(pricing);
         }

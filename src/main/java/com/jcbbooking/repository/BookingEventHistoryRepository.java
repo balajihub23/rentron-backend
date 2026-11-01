@@ -9,4 +9,5 @@ import java.util.List;
 @Repository
 public interface BookingEventHistoryRepository extends JpaRepository<BookingEventHistory, Long> {
     List<BookingEventHistory> findAllByBookingIdOrderByCreatedAtAsc(Long bookingId);
+    void deleteAllByBookingId(Long bookingId);
 }

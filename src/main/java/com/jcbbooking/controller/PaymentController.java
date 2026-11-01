@@ -29,6 +29,8 @@ public class PaymentController {
     private final BookingRepository bookingRepository;
     private final UserRepository userRepository;
     private final BookingAssignmentService bookingAssignmentService;
+    private final com.jcbbooking.repository.DriverRepository driverRepository;
+    private final com.jcbbooking.websocket.WebSocketNotificationService webSocketNotificationService;
 
     @PostMapping("/create-order")
     public ResponseEntity<ApiResponse<Map<String, Object>>> createRazorpayOrder(@RequestBody Map<String, Object> request) {
@@ -51,7 +53,7 @@ public class PaymentController {
         responseData.put("orderId", razorpayOrderId);
         responseData.put("amount", amountInPaise);
         responseData.put("currency", settings.getCurrency() != null ? settings.getCurrency() : "INR");
-        responseData.put("keyId", settings.getKeyId() != null ? settings.getKeyId() : "rzp_test_mockKey123");
+        responseData.put("keyId", settings.getKeyId() != null ? settings.getKeyId() : "rzp_test_mGa2SfsXusZ9u7");
         responseData.put("bookingNumber", booking.getBookingNumber());
 
         return ResponseEntity.ok(ApiResponse.success("Razorpay payment order created successfully", responseData));
@@ -92,23 +94,98 @@ public class PaymentController {
             return ResponseEntity.badRequest().body(ApiResponse.error("Invalid Razorpay payment signature"));
         }
 
-        // Mark payment as PAID & confirm booking
+        // Mark payment as PAID & confirm booking or complete ride
         booking.setPaymentStatus("PAID");
-        if ("SCHEDULED".equalsIgnoreCase(booking.getBookingType())) {
+        booking.setPaymentMethod("ONLINE");
+
+        if ("STARTED".equalsIgnoreCase(booking.getStatus()) || "IN_PROGRESS".equalsIgnoreCase(booking.getStatus()) || "ARRIVED".equalsIgnoreCase(booking.getStatus())) {
+            booking.setStatus("COMPLETED");
+            booking.setRideCompletedAt(java.time.LocalDateTime.now());
+            if (booking.getFinalFare() == null || booking.getFinalFare() <= 0.0) {
+                booking.setFinalFare(booking.getTotalAmount());
+            }
+        } else if ("SCHEDULED".equalsIgnoreCase(booking.getBookingType())) {
             booking.setStatus("SCHEDULED");
-            bookingRepository.save(booking);
-            return ResponseEntity.ok(ApiResponse.success("Payment verified successfully for scheduled booking", razorpayPaymentId));
-        }
-
-        if ("PENDING".equalsIgnoreCase(booking.getStatus())) {
+        } else if ("PENDING".equalsIgnoreCase(booking.getStatus())) {
             booking.setStatus("CONFIRMED");
+            bookingAssignmentService.startAutoAssignmentProcess(bookingId);
         }
-        bookingRepository.save(booking);
+        Booking saved = bookingRepository.save(booking);
 
-        // Start progressive auto assignment for immediate rides
-        bookingAssignmentService.startAutoAssignmentProcess(bookingId);
+        // Update driver stats if completing ride
+        if ("COMPLETED".equalsIgnoreCase(saved.getStatus()) && saved.getDriverId() != null) {
+            driverRepository.findById(saved.getDriverId()).ifPresent(driver -> {
+                driver.setTotalJobs((driver.getTotalJobs() != null ? driver.getTotalJobs() : 0) + 1);
+                double prev = driver.getTotalEarnings() != null ? driver.getTotalEarnings() : 0.0;
+                driver.setTotalEarnings(prev + (saved.getDriverAmount() != null ? saved.getDriverAmount() : 0.0));
+                driverRepository.save(driver);
+            });
+        }
 
-        return ResponseEntity.ok(ApiResponse.success("Payment verified successfully and auto-assignment triggered", razorpayPaymentId));
+        webSocketNotificationService.sendBookingLifecycleEvent(bookingId, "PAYMENT_CONFIRMED", Map.of(
+                "bookingId", bookingId,
+                "paymentStatus", "PAID",
+                "paymentMethod", "ONLINE",
+                "status", saved.getStatus()
+        ));
+
+        if ("COMPLETED".equalsIgnoreCase(saved.getStatus())) {
+            webSocketNotificationService.sendBookingLifecycleEvent(bookingId, "RIDE_COMPLETED", Map.of(
+                    "bookingId", bookingId,
+                    "status", "COMPLETED",
+                    "finalFare", saved.getFinalFare() != null ? saved.getFinalFare() : saved.getTotalAmount()
+            ));
+        }
+
+        return ResponseEntity.ok(ApiResponse.success("Payment verified successfully", razorpayPaymentId));
+    }
+
+    @PostMapping("/cash-received")
+    @Transactional
+    public ResponseEntity<ApiResponse<Booking>> confirmCashPaymentReceived(@RequestBody Map<String, Object> body) {
+        Long bookingId = Long.valueOf(body.get("bookingId").toString());
+        log.info("REST request to confirm cash payment received for booking ID {}", bookingId);
+
+        Booking booking = bookingRepository.findById(bookingId).orElse(null);
+        if (booking == null) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("Booking not found"));
+        }
+
+        booking.setPaymentStatus("PAID");
+        booking.setPaymentMethod("CASH");
+        if (!"COMPLETED".equalsIgnoreCase(booking.getStatus())) {
+            booking.setStatus("COMPLETED");
+            booking.setRideCompletedAt(java.time.LocalDateTime.now());
+            if (booking.getFinalFare() == null || booking.getFinalFare() <= 0.0) {
+                booking.setFinalFare(booking.getTotalAmount());
+            }
+        }
+        Booking saved = bookingRepository.save(booking);
+
+        // Update driver stats
+        if (saved.getDriverId() != null) {
+            driverRepository.findById(saved.getDriverId()).ifPresent(driver -> {
+                driver.setTotalJobs((driver.getTotalJobs() != null ? driver.getTotalJobs() : 0) + 1);
+                double prev = driver.getTotalEarnings() != null ? driver.getTotalEarnings() : 0.0;
+                driver.setTotalEarnings(prev + (saved.getDriverAmount() != null ? saved.getDriverAmount() : 0.0));
+                driverRepository.save(driver);
+            });
+        }
+
+        webSocketNotificationService.sendBookingLifecycleEvent(bookingId, "PAYMENT_CONFIRMED", Map.of(
+                "bookingId", bookingId,
+                "paymentStatus", "PAID",
+                "paymentMethod", "CASH",
+                "status", saved.getStatus()
+        ));
+
+        webSocketNotificationService.sendBookingLifecycleEvent(bookingId, "RIDE_COMPLETED", Map.of(
+                "bookingId", bookingId,
+                "status", "COMPLETED",
+                "finalFare", saved.getFinalFare() != null ? saved.getFinalFare() : saved.getTotalAmount()
+        ));
+
+        return ResponseEntity.ok(ApiResponse.success("Cash payment confirmed and ride completed", saved));
     }
 
     @GetMapping("/admin/transactions")

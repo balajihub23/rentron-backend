@@ -44,6 +44,7 @@ public class DriverController {
     private final com.jcbbooking.repository.PartnerApprovalRepository partnerApprovalRepository;
     private final com.jcbbooking.repository.VehicleRepository vehicleRepository;
     private final com.jcbbooking.repository.ProductRepository productRepository;
+    private final com.jcbbooking.repository.BookingSettingRepository bookingSettingRepository;
 
     @Value("${core.fileTransfer.primaryUploadFolder:/opt/microservice/upload/images}")
     private String primaryUploadFolder;
@@ -331,12 +332,21 @@ public class DriverController {
     public ResponseEntity<ApiResponse<java.util.List<java.util.Map<String, Object>>>> searchNearbyDrivers(
             @org.springframework.web.bind.annotation.RequestParam double latitude,
             @org.springframework.web.bind.annotation.RequestParam double longitude,
-            @org.springframework.web.bind.annotation.RequestParam(required = false, defaultValue = "10.0") double radiusKm,
+            @org.springframework.web.bind.annotation.RequestParam(required = false) Double radiusKm,
             @org.springframework.web.bind.annotation.RequestParam(required = false) String vehicleType,
             @org.springframework.web.bind.annotation.RequestParam(required = false) Long productId) {
 
+        double effectiveRadius = (radiusKm != null && radiusKm > 0) ? radiusKm : 10.0;
+        if (radiusKm == null || radiusKm <= 0) {
+            com.jcbbooking.model.BookingSetting setting = bookingSettingRepository.findBySettingKey("DEFAULT_SETTINGS")
+                    .orElseGet(() -> bookingSettingRepository.findAll().stream().findFirst().orElse(null));
+            if (setting != null && setting.getInitialRadiusKm() != null) {
+                effectiveRadius = setting.getInitialRadiusKm();
+            }
+        }
+
         log.info("REST request to search nearby drivers lat: {}, lon: {}, radius: {} km, vehicleType: {}, productId: {}",
-                latitude, longitude, radiusKm, vehicleType, productId);
+                latitude, longitude, effectiveRadius, vehicleType, productId);
 
         String effectiveVehicleType = vehicleType;
         if ((effectiveVehicleType == null || effectiveVehicleType.trim().isEmpty()) && productId != null) {
@@ -358,10 +368,13 @@ public class DriverController {
         java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
 
         for (Driver d : activeDrivers) {
+            if (!Boolean.TRUE.equals(d.getIsOnline())) {
+                continue;
+            }
             if (d.getLatitude() != null && d.getLongitude() != null) {
                 if (com.jcbbooking.service.BookingAssignmentService.isVehicleTypeMatch(d.getSelectedVehicleType(), effectiveVehicleType)) {
                     double dist = com.jcbbooking.util.HaversineDistanceUtil.calculateDistanceKm(latitude, longitude, d.getLatitude(), d.getLongitude());
-                    if (dist <= radiusKm) {
+                    if (dist <= effectiveRadius) {
                         java.util.Map<String, Object> item = new java.util.HashMap<>();
                         item.put("driverId", d.getId());
                         item.put("userId", d.getUserId());

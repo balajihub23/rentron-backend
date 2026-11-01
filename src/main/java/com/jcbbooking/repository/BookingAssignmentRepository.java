@@ -18,4 +18,5 @@ public interface BookingAssignmentRepository extends JpaRepository<BookingAssign
             Long bookingId, String candidateType, Long candidateId);
     Optional<BookingAssignment> findFirstByBookingIdAndCandidateTypeAndCandidateIdAndStatus(
             Long bookingId, String candidateType, Long candidateId, String status);
+    void deleteAllByBookingId(Long bookingId);
 }
