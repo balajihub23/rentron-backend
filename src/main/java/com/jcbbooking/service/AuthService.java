@@ -4,7 +4,7 @@ import com.jcbbooking.dto.*;
 
 public interface AuthService {
 
-    void sendOtp(SendOtpRequest request);
+    String sendOtp(SendOtpRequest request);
 
     AuthResponse verifyOtpLogin(VerifyOtpRequest request);
 

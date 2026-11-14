@@ -42,6 +42,9 @@ public class OtpVerification {
     @Column(name = "blocked_until")
     private LocalDateTime blockedUntil;
 
+    @Transient
+    private String rawCode;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false, columnDefinition = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     private LocalDateTime createdAt;

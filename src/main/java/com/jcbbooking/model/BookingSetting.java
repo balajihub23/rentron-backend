@@ -114,15 +114,32 @@ public class BookingSetting {
 	private Boolean smtpEnabled = false;
 
 	// --- Fast2SMS Configuration ---
+	@Builder.Default
+	@Column(name = "fast2sms_url", length = 200)
+	private String fast2smsUrl = "https://www.fast2sms.com/dev/bulkV2";
+
 	@Column(name = "fast2sms_api_key", length = 200)
 	private String fast2smsApiKey;
 
+	@Builder.Default
 	@Column(name = "fast2sms_sender_id", length = 50)
-	private String fast2smsSenderId;
+	private String fast2smsSenderId = "RENTRON";
 
 	@Builder.Default
 	@Column(name = "fast2sms_route", length = 20)
-	private String fast2smsRoute = "v3";
+	private String fast2smsRoute = "dlt";
+
+	@Builder.Default
+	@Column(name = "otp_message_template", length = 100)
+	private String otpMessageTemplate = "214426";
+
+	@Builder.Default
+	@Column(name = "otp_digit")
+	private Integer otpDigit = 6;
+
+	@Builder.Default
+	@Column(name = "sms_vendor", length = 50)
+	private String smsVendor = "FAST-SMS";
 
 	@Builder.Default
 	@Column(name = "sms_enabled", nullable = false)

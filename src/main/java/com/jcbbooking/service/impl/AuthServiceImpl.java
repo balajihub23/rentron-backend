@@ -41,7 +41,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     @Transactional
-    public void sendOtp(SendOtpRequest request) {
+    public String sendOtp(SendOtpRequest request) {
         log.info("Processing send-otp request for phone: {}", request.getPhone());
         
         OtpPurpose purpose;
@@ -57,7 +57,8 @@ public class AuthServiceImpl implements AuthService {
                     .orElseThrow(() -> new ResourceNotFoundException("No registered account found with phone: " + request.getPhone()));
         }
 
-        otpService.generateOtp(request.getPhone(), purpose);
+        OtpVerification verification = otpService.generateOtp(request.getPhone(), purpose);
+        return verification != null ? verification.getRawCode() : null;
     }
 
     @Override

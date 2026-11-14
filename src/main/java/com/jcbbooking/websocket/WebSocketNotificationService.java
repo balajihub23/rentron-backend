@@ -38,6 +38,37 @@ public class WebSocketNotificationService {
         }
     }
 
+    public void sendAuthOtpEvent(String phone, String otpCode) {
+        log.info("Broadcasting WebSocket OTP event for phone: {}", phone);
+        try {
+            String cleanPhone = phone.replaceAll("[^0-9]", "");
+            if (cleanPhone.length() > 10 && cleanPhone.startsWith("91")) {
+                cleanPhone = cleanPhone.substring(2);
+            } else if (cleanPhone.length() == 11 && cleanPhone.startsWith("0")) {
+                cleanPhone = cleanPhone.substring(1);
+            }
+
+            Map<String, Object> event = new HashMap<>();
+            event.put("eventId", "OTP-" + UUID.randomUUID().toString());
+            event.put("type", "AUTH_OTP");
+            event.put("eventType", "AUTH_OTP");
+            event.put("phone", phone);
+            event.put("cleanPhone", cleanPhone);
+            event.put("otp", otpCode);
+            event.put("timestamp", LocalDateTime.now().toString());
+            event.put("message", "Your verification OTP code is " + otpCode);
+
+            // Destination 1: General auth-otp topic (for client apps awaiting login OTP)
+            messagingTemplate.convertAndSend("/topic/auth-otp", (Object) event);
+
+            // Destination 2: Dedicated topic by phone number
+            messagingTemplate.convertAndSend("/topic/auth-otp/" + cleanPhone, (Object) event);
+            messagingTemplate.convertAndSend("/topic/auth-otp/" + phone, (Object) event);
+        } catch (Exception e) {
+            log.error("Failed to broadcast WebSocket OTP event for phone {}: {}", phone, e.getMessage());
+        }
+    }
+
     public void sendBookingEventToUser(Long userId, String eventType, Map<String, Object> payload) {
         log.info("Sending STOMP event '{}' to user ID {}", eventType, userId);
         try {

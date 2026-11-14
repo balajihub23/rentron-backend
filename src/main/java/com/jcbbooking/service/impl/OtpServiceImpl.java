@@ -23,6 +23,8 @@ public class OtpServiceImpl implements OtpService {
 
     private final OtpVerificationRepository otpVerificationRepository;
     private final OtpCryptoService otpCryptoService;
+    private final com.jcbbooking.service.SmsService smsService;
+    private final com.jcbbooking.websocket.WebSocketNotificationService webSocketNotificationService;
     private final Random random = new Random();
 
     @Override
@@ -54,11 +56,31 @@ public class OtpServiceImpl implements OtpService {
                 .build();
 
         OtpVerification savedOtp = otpVerificationRepository.save(otpVerification);
+        savedOtp.setRawCode(rawOtpCode);
         
-        // Log the raw OTP so it can be used for testing (instead of System.out.println)
+        // Log the raw OTP for diagnostics
         log.info("--------------------------------------------------");
-        log.info("MOCK SMS: Sent OTP code [{}] to phone [{}] for purpose [{}]", rawOtpCode, phone, purpose);
+        log.info("AUTH OTP: Generated OTP code [{}] for phone [{}] with purpose [{}]", rawOtpCode, phone, purpose);
         log.info("--------------------------------------------------");
+
+        // Broadcast OTP over WebSocket for live testing & UI auto-fill
+        try {
+            webSocketNotificationService.sendAuthOtpEvent(phone, rawOtpCode);
+        } catch (Exception ex) {
+            log.warn("Failed to broadcast WebSocket OTP for {}: {}", phone, ex.getMessage());
+        }
+
+        // Dispatch real SMS via Fast2SMS gateway if enabled
+        try {
+            boolean sent = smsService.sendOtpSms(phone, rawOtpCode);
+            if (sent) {
+                log.info("Fast2SMS successfully delivered OTP code to phone [{}]", phone);
+            } else {
+                log.info("Fast2SMS not dispatched (disabled in settings, missing key, or gateway returned false). Fallback mock code: [{}]", rawOtpCode);
+            }
+        } catch (Exception ex) {
+            log.warn("Error calling Fast2SMS service for phone [{}]: {}", phone, ex.getMessage());
+        }
 
         return savedOtp;
     }

@@ -18,10 +18,14 @@ public class AuthController {
     private final AuthService authService;
 
     @PostMapping("/send-otp")
-    public ResponseEntity<ApiResponse<Void>> sendOtp(@Valid @RequestBody SendOtpRequest request) {
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> sendOtp(@Valid @RequestBody SendOtpRequest request) {
         log.info("REST request to send OTP to: {}", request.getPhone());
-        authService.sendOtp(request);
-        return ResponseEntity.ok(ApiResponse.success("OTP sent successfully"));
+        String rawOtp = authService.sendOtp(request);
+        java.util.Map<String, Object> data = new java.util.HashMap<>();
+        data.put("phone", request.getPhone());
+        data.put("testOtp", rawOtp);
+        data.put("message", "OTP generated and broadcast via WebSocket");
+        return ResponseEntity.ok(ApiResponse.success("OTP sent successfully", data));
     }
 
     @PostMapping("/verify-otp")

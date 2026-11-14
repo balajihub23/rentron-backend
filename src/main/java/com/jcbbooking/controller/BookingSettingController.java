@@ -23,6 +23,7 @@ public class BookingSettingController {
     private final BookingAssignmentService bookingAssignmentService;
     private final BookingSettingRepository bookingSettingRepository;
     private final BookingAssignmentRepository bookingAssignmentRepository;
+    private final com.jcbbooking.service.SmsService smsService;
 
     @GetMapping
     public ResponseEntity<ApiResponse<BookingSetting>> getSettings() {
@@ -54,9 +55,13 @@ public class BookingSettingController {
                 .smtpPassword(settings.getSmtpPassword() != null ? "******" : null)
                 .smtpFromEmail(settings.getSmtpFromEmail())
                 .smtpEnabled(settings.getSmtpEnabled())
+                .fast2smsUrl(settings.getFast2smsUrl())
                 .fast2smsApiKey(settings.getFast2smsApiKey() != null ? "******" : null)
                 .fast2smsSenderId(settings.getFast2smsSenderId())
                 .fast2smsRoute(settings.getFast2smsRoute())
+                .otpMessageTemplate(settings.getOtpMessageTemplate())
+                .otpDigit(settings.getOtpDigit())
+                .smsVendor(settings.getSmsVendor())
                 .smsEnabled(settings.getSmsEnabled())
                 .createdAt(settings.getCreatedAt())
                 .updatedAt(settings.getUpdatedAt())
@@ -107,15 +112,31 @@ public class BookingSettingController {
         if (request.getSmtpEnabled() != null) existing.setSmtpEnabled(request.getSmtpEnabled());
 
         // Fast2SMS settings
+        if (request.getFast2smsUrl() != null) existing.setFast2smsUrl(request.getFast2smsUrl());
         if (request.getFast2smsApiKey() != null && !request.getFast2smsApiKey().isEmpty() && !"******".equals(request.getFast2smsApiKey())) {
             existing.setFast2smsApiKey(request.getFast2smsApiKey());
         }
         if (request.getFast2smsSenderId() != null) existing.setFast2smsSenderId(request.getFast2smsSenderId());
         if (request.getFast2smsRoute() != null) existing.setFast2smsRoute(request.getFast2smsRoute());
+        if (request.getOtpMessageTemplate() != null) existing.setOtpMessageTemplate(request.getOtpMessageTemplate());
+        if (request.getOtpDigit() != null) existing.setOtpDigit(request.getOtpDigit());
+        if (request.getSmsVendor() != null) existing.setSmsVendor(request.getSmsVendor());
         if (request.getSmsEnabled() != null) existing.setSmsEnabled(request.getSmsEnabled());
 
         BookingSetting saved = bookingSettingRepository.save(existing);
         return ResponseEntity.ok(ApiResponse.success("Booking settings updated successfully", saved));
+    }
+
+    @PostMapping("/test-sms")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<ApiResponse<String>> testSms(@RequestParam String phone) {
+        log.info("REST request to send test SMS to {}", phone);
+        boolean sent = smsService.sendOtpSms(phone, "123456");
+        if (sent) {
+            return ResponseEntity.ok(ApiResponse.success("Test SMS sent successfully to " + phone));
+        } else {
+            return ResponseEntity.badRequest().body(ApiResponse.error("Failed to send test SMS. Please verify your Fast2SMS API key, Sender ID, and DLT Template ID."));
+        }
     }
 
     @GetMapping("/assignments/{bookingId}")
