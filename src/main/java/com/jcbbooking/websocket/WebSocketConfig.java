@@ -32,6 +32,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final JwtTokenProvider jwtTokenProvider;
     private final CustomUserDetailsService userDetailsService;
+    private final org.springframework.context.ApplicationContext applicationContext;
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
@@ -99,7 +100,22 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         java.security.Principal principal = accessor.getUser();
                         if (principal instanceof UsernamePasswordAuthenticationToken auth && auth.getPrincipal() instanceof com.jcbbooking.security.CustomUserDetails cud) {
                             boolean isAdmin = cud.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
-                            if (!isAdmin && !cud.getId().toString().equals(targetId)) {
+                            boolean isAllowed = isAdmin || cud.getId().toString().equals(targetId);
+
+                            if (!isAllowed && dest.startsWith("/topic/booking-offers/")) {
+                                try {
+                                    Long targetDriverId = Long.parseLong(targetId);
+                                    com.jcbbooking.repository.DriverRepository driverRepo =
+                                            applicationContext.getBean(com.jcbbooking.repository.DriverRepository.class);
+                                    isAllowed = driverRepo.findByUserId(cud.getId())
+                                            .map(d -> d.getId().equals(targetDriverId))
+                                            .orElse(false);
+                                } catch (Exception e) {
+                                    log.debug("Error checking driver permission for topic {}: {}", dest, e.getMessage());
+                                }
+                            }
+
+                            if (!isAllowed) {
                                 log.warn("AccessDenied: User {} tried to subscribe to unauthorized topic: {}", cud.getId(), dest);
                                 throw new org.springframework.security.access.AccessDeniedException("Unauthorized subscription to topic " + dest);
                             }
