@@ -5,6 +5,7 @@ import com.jcbbooking.model.Menu;
 import com.jcbbooking.model.Role;
 import com.jcbbooking.model.RoleMenuAccess;
 import com.jcbbooking.model.RolePermissionAccess;
+import com.jcbbooking.repository.MenuRepository;
 import com.jcbbooking.repository.RoleMenuAccessRepository;
 import com.jcbbooking.repository.RolePermissionAccessRepository;
 import com.jcbbooking.service.MenuService;
@@ -24,18 +25,22 @@ public class MenuServiceImpl implements MenuService {
 
     private final RoleMenuAccessRepository roleMenuAccessRepository;
     private final RolePermissionAccessRepository rolePermissionAccessRepository;
+    private final MenuRepository menuRepository;
 
     @Override
     public List<MenuResponse> getMenusForRole(Role role) {
         log.info("Fetching menus for role: {}", role);
 
-        List<RoleMenuAccess> accessList = roleMenuAccessRepository.findByRole(role);
-        
-        // Extract active menus
-        List<Menu> accessibleMenus = accessList.stream()
-                .map(RoleMenuAccess::getMenu)
-                .filter(Menu::getActive)
-                .collect(Collectors.toList());
+        List<Menu> accessibleMenus;
+        if (role == Role.ADMIN) {
+            accessibleMenus = menuRepository.findByActiveTrueOrderByDisplayOrderAsc();
+        } else {
+            List<RoleMenuAccess> accessList = roleMenuAccessRepository.findByRole(role);
+            accessibleMenus = accessList.stream()
+                    .map(RoleMenuAccess::getMenu)
+                    .filter(Menu::getActive)
+                    .collect(Collectors.toList());
+        }
 
         // Create a fast map of Menu ID -> MenuResponse
         Map<Long, MenuResponse> responseMap = new HashMap<>();
