@@ -332,7 +332,31 @@ public class DriverProfileController {
                 .findAllByCandidateTypeAndCandidateIdAndStatusOrderByOfferedAtDesc("DRIVER", driver.getId(), "OFFERED");
 
         List<Map<String, Object>> response = new ArrayList<>();
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+
         for (com.jcbbooking.model.BookingAssignment ba : offers) {
+            // Check offer timeout: if offer is older than 60 seconds, mark as expired
+            if (ba.getOfferedAt() != null && ba.getOfferedAt().plusSeconds(60).isBefore(now)) {
+                ba.setStatus("EXPIRED");
+                bookingAssignmentRepository.save(ba);
+                continue;
+            }
+
+            Optional<com.jcbbooking.model.Booking> bookingOpt = bookingRepository.findById(ba.getBookingId());
+            if (bookingOpt.isEmpty()) {
+                ba.setStatus("EXPIRED");
+                bookingAssignmentRepository.save(ba);
+                continue;
+            }
+
+            com.jcbbooking.model.Booking b = bookingOpt.get();
+            // Only offer if the booking is currently awaiting driver acceptance (SEARCHING_DRIVER or PENDING)
+            if (!"SEARCHING_DRIVER".equals(b.getStatus()) && !"PENDING".equals(b.getStatus())) {
+                ba.setStatus("EXPIRED");
+                bookingAssignmentRepository.save(ba);
+                continue;
+            }
+
             Map<String, Object> map = new HashMap<>();
             map.put("assignmentId", ba.getId());
             map.put("bookingId", ba.getBookingId());
@@ -340,15 +364,12 @@ public class DriverProfileController {
             map.put("distanceKm", ba.getDistanceKm());
             map.put("offeredAt", ba.getOfferedAt());
             map.put("status", ba.getStatus());
-
-            bookingRepository.findById(ba.getBookingId()).ifPresent(b -> {
-                map.put("bookingNumber", b.getBookingNumber());
-                map.put("bookingType", b.getBookingType());
-                map.put("pickupAddress", b.getPickupAddressText());
-                map.put("destinationAddress", b.getDestinationAddressText());
-                map.put("totalAmount", b.getTotalAmount());
-                map.put("scheduledPickupAt", b.getScheduledPickupAt());
-            });
+            map.put("bookingNumber", b.getBookingNumber());
+            map.put("bookingType", b.getBookingType());
+            map.put("pickupAddress", b.getPickupAddressText());
+            map.put("destinationAddress", b.getDestinationAddressText());
+            map.put("totalAmount", b.getTotalAmount());
+            map.put("scheduledPickupAt", b.getScheduledPickupAt());
             response.add(map);
         }
 
